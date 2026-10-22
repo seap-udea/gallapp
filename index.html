@@ -4,13 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Local gallery: view images in a directory, like them, and download them.">
-  <title>Gallapp</title>
+  <title>Gallery App</title>
   <link rel="stylesheet" href="gallery.css">
 </head>
 <body class="gallery-page">
   <header class="site-header">
     <div class="header-inner">
-      <a class="brand" href="./">Gallapp</a>
+      <div class="brand-group">
+        <a class="brand-mark" href="https://seap-udea.github.io/" target="_blank" rel="noopener noreferrer">
+          <img class="brand-logo" src="assets/logo-seap-banner.webp" alt="SEAP-UdeA" width="1627" height="200">
+        </a>
+        <a class="brand" href="./">Gallery App</a>
+      </div>
       <form class="dir-form" id="dir-form" action="./" method="get">
         <label for="dir-input">Directory</label>
         <input id="dir-input" name="dir" type="text" spellcheck="false" autocomplete="off" placeholder="path/relative/to/the/directory" enterkeyhint="go">
@@ -24,6 +29,7 @@
 
   <div class="gallery-lightbox" id="gallery-lightbox" hidden>
     <button type="button" class="gallery-lightbox-close" id="lightbox-close" aria-label="Close">×</button>
+    <span class="gallery-liked-mark" hidden aria-hidden="true">★</span>
     <img id="lightbox-image" alt="">
     <p class="gallery-lightbox-caption" id="lightbox-caption"></p>
   </div>
@@ -33,10 +39,11 @@
       <button type="button" class="gallery-fs-nav" id="fs-prev" aria-label="Previous image">‹</button>
       <span class="gallery-fs-counter" id="fs-counter"></span>
       <button type="button" class="gallery-fs-nav" id="fs-next" aria-label="Next image">›</button>
-      <button type="button" class="gallery-fs-like" id="fs-like" aria-pressed="false" aria-label="Like" title="Like">♡</button>
+      <button type="button" class="gallery-fs-like" id="fs-like" aria-pressed="false" aria-label="Like" title="Like">☆</button>
       <button type="button" class="gallery-fs-close" id="fs-close" aria-label="Exit fullscreen">×</button>
     </div>
     <div class="gallery-fs-stage">
+      <span class="gallery-liked-mark" hidden aria-hidden="true">★</span>
       <img class="gallery-fs-image" id="fs-image" alt="">
     </div>
     <p class="gallery-fs-caption" id="fs-caption"></p>
@@ -44,7 +51,7 @@
 
   <footer class="site-footer">
     <div class="footer-bottom">
-      Gallapp · likes are saved in this browser
+      Developed by <a href="https://jorgezuluaga.github.io/">Jorge I. Zuluaga</a> with the assistance of AI
     </div>
   </footer>
 
@@ -53,11 +60,11 @@
       <h1>Local gallery</h1>
       <p>Browse the images in a directory, like the ones you want, and download them when you are done choosing.</p>
       <ol class="gallery-steps">
-        <li>In the <code>code</code> folder, start a server: <code>python3 -m http.server</code></li>
+        <li>In the <code>code</code> folder, start a server: <code>python3 gallapp/server.py</code></li>
         <li>Open <code>http://localhost:8000/gallapp/</code></li>
         <li>Enter the directory path relative to <code>code</code>. For example <code>test_dev/paper_workshop_LSST/figs</code></li>
       </ol>
-      <p>One liked image downloads as itself. Several liked images are packed into a <code>.zip</code>. If the directory contains an <code>index.html</code>, Python’s server shows that page and Gallapp cannot see the file list.</p>
+      <p>One liked image downloads as itself. Several liked images are packed into a <code>.zip</code>. Likes are written to <code>.gallapp_likes</code> in that image folder. If the directory contains an <code>index.html</code>, Python’s server shows that page and Gallery App cannot see the file list.</p>
       <div id="gallery-recent"></div>
     </section>
   </template>

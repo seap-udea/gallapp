@@ -253,11 +253,30 @@
     return images;
   }
 
+  /**
+   * Shell-style name filter. * matches any text, ? matches one character.
+   * A blank pattern matches every name. The default *.* matches names with a dot.
+   */
+  function nameMatchesFilter(name, pattern) {
+    var text = String(pattern == null ? "*.*" : pattern).trim();
+    var escaped = "";
+    var i, ch;
+    if (!text || text === "*") return true;
+    for (i = 0; i < text.length; i++) {
+      ch = text.charAt(i);
+      if (ch === "*") escaped += ".*";
+      else if (ch === "?") escaped += ".";
+      else escaped += ch.replace(/[\\^$+?.()|[\]{}]/g, "\\$&");
+    }
+    return new RegExp("^" + escaped + "$", "i").test(String(name));
+  }
+
   var api = {
     normalizeDir: normalizeDir,
     imagesFromListing: imagesFromListing,
     buildStoredZip: buildStoredZip,
     crc32: crc32,
+    nameMatchesFilter: nameMatchesFilter,
   };
 
   if (typeof module !== "undefined" && module.exports) {
@@ -290,6 +309,7 @@
     index: 0,
     liked: {},
     onlyLiked: false,
+    nameFilter: "*.*",
     fitWidth: false,
     fullscreen: false,
     downloading: false,
@@ -330,7 +350,27 @@
     return "gallapp-likes:" + state.dir;
   }
 
-  function loadLikes() {
+  function likesFileUrl() {
+    return directoryUrl(state.dir) + ".gallapp_likes";
+  }
+
+  function likesText() {
+    var names = Object.keys(state.liked).sort(function (a, b) {
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    });
+    return names.length ? names.join("\n") + "\n" : "";
+  }
+
+  function applyLikesText(text) {
+    state.liked = {};
+    String(text || "").split(/\r?\n/).forEach(function (line) {
+      var name = line.trim();
+      if (!name || name.charAt(0) === "#") return;
+      state.liked[name] = true;
+    });
+  }
+
+  function loadLikesFromStorage() {
     state.liked = {};
     try {
       var list = JSON.parse(window.localStorage.getItem(likeStorageKey()) || "[]");
@@ -342,10 +382,55 @@
     } catch (err) {}
   }
 
-  function saveLikes() {
+  function saveLikesToStorage() {
     try {
       window.localStorage.setItem(likeStorageKey(), JSON.stringify(Object.keys(state.liked)));
     } catch (err) {}
+  }
+
+  async function loadLikes() {
+    state.liked = {};
+    state.likesInFile = false;
+    try {
+      var res = await fetch(likesFileUrl(), { cache: "no-store" });
+      if (res.ok) {
+        applyLikesText(await res.text());
+        state.likesInFile = true;
+        return;
+      }
+    } catch (err) {}
+    loadLikesFromStorage();
+  }
+
+  function saveLikes() {
+    var body = likesText();
+    var dir = state.dir;
+    var url = likesFileUrl();
+    state.likeSave = Promise.resolve(state.likeSave)
+      .catch(function () {})
+      .then(function () {
+        if (dir !== state.dir) return;
+        return fetch(url, {
+          method: "PUT",
+          cache: "no-store",
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: body,
+        }).then(function (res) {
+          if (!res.ok) throw new Error(String(res.status));
+          state.likesInFile = true;
+        });
+      })
+      .catch(function () {
+        if (dir !== state.dir) return;
+        saveLikesToStorage();
+        if (!state.likesSaveWarned) {
+          state.likesSaveWarned = true;
+          setStatus(
+            "Could not write .gallapp_likes. Start with python3 gallapp/server.py so likes are saved in the image folder.",
+            true
+          );
+        }
+      });
   }
 
   function loadRecent() {
@@ -373,8 +458,11 @@
   }
 
   function visibleImages() {
-    if (!state.onlyLiked) return state.images;
-    return state.images.filter(isLiked);
+    var list = state.images.filter(function (img) {
+      return nameMatchesFilter(img.name, state.nameFilter);
+    });
+    if (!state.onlyLiked) return list;
+    return list.filter(isLiked);
   }
 
   function likedImages() {
@@ -406,10 +494,10 @@
     el.setAttribute("aria-pressed", on ? "true" : "false");
     el.setAttribute("title", label);
     if (withLabel) {
-      el.textContent = on ? "♥ Liked" : "♡ Like";
+      el.textContent = on ? "★ Liked" : "☆ Like";
     } else {
       el.setAttribute("aria-label", label);
-      el.textContent = on ? "♥" : "♡";
+      el.textContent = on ? "★" : "☆";
     }
   }
 
@@ -426,6 +514,10 @@
     var strip = document.getElementById("gallery-filmstrip");
     setLikeButton(document.getElementById("gallery-like"), isLiked(current), true);
     setLikeButton(fsLike, isLiked(current), false);
+    document.querySelectorAll(".gallery-liked-mark").forEach(function (el) {
+      el.hidden = !isLiked(current);
+    });
+    placeLikedMarks();
     if (grid) {
       grid.querySelectorAll(".gallery-grid-item").forEach(function (el) {
         var img = visibleImages()[Number(el.getAttribute("data-index"))];
@@ -440,6 +532,10 @@
         el.classList.toggle("is-liked", isLiked(img));
       });
     }
+    document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
+      btn.disabled = count === 0;
+      btn.title = count ? "Remove every like in this directory" : "No liked images";
+    });
     document.querySelectorAll('[data-action="download-liked"]').forEach(function (btn) {
       btn.disabled = count === 0 || state.downloading;
       btn.title = count
@@ -525,6 +621,18 @@
     }
   }
 
+  function unlikeAll() {
+    if (!likedImages().length) return;
+    state.liked = {};
+    saveLikes();
+    if (state.onlyLiked) {
+      state.index = 0;
+      render();
+      return;
+    }
+    updateLikeUI();
+  }
+
   function toggleLike(index) {
     var img = visibleImages()[index];
     var next;
@@ -553,6 +661,29 @@
     updateLikeUI();
   }
 
+  function placeLikedMarks() {
+    var pairs = [
+      ["#gallery-preview-stage .gallery-liked-mark", "gallery-preview-image"],
+      ["#gallery-lightbox .gallery-liked-mark", "lightbox-image"],
+      ["#gallery-fullscreen .gallery-liked-mark", "fs-image"],
+    ];
+    pairs.forEach(function (pair) {
+      var mark = document.querySelector(pair[0]);
+      var img = document.getElementById(pair[1]);
+      var stage, stageRect, imgRect, top, right;
+      if (!mark || !img || mark.hidden) return;
+      stage = mark.parentElement;
+      if (!stage) return;
+      stageRect = stage.getBoundingClientRect();
+      imgRect = img.getBoundingClientRect();
+      if (!imgRect.width || !imgRect.height) return;
+      top = imgRect.top - stageRect.top + 8;
+      right = stageRect.right - imgRect.right + 8;
+      mark.style.top = top + "px";
+      mark.style.right = right + "px";
+    });
+  }
+
   function applyFitWidth() {
     var stage = document.getElementById("gallery-preview-stage");
     var btn = document.getElementById("gallery-fit");
@@ -562,6 +693,7 @@
       btn.setAttribute("aria-pressed", state.fitWidth ? "true" : "false");
       btn.textContent = state.fitWidth ? "Normal size" : "Fit to width";
     }
+    placeLikedMarks();
   }
 
   function updatePreview() {
@@ -573,8 +705,12 @@
     var img = images[state.index];
     var thumb, target;
     if (!imgEl || !img) return;
+    if (imgEl.getAttribute("src") !== img.url) {
+      imgEl.addEventListener("load", placeLikedMarks, { once: true });
+    }
     imgEl.src = img.url;
     imgEl.alt = img.name;
+    requestAnimationFrame(placeLikedMarks);
     if (nameEl) setNameLink(nameEl, img);
     if (counter) counter.textContent = state.index + 1 + " / " + images.length;
     if (strip) {
@@ -603,8 +739,12 @@
     images = visibleImages();
     img = images[state.index];
     if (!img) return;
+    if (fsImage.getAttribute("src") !== img.url) {
+      fsImage.addEventListener("load", placeLikedMarks, { once: true });
+    }
     fsImage.src = img.url;
     fsImage.alt = img.name;
+    requestAnimationFrame(placeLikedMarks);
     setNameLink(fsCaption, img);
     if (fsCounter) fsCounter.textContent = state.index + 1 + " / " + images.length;
   }
@@ -612,8 +752,12 @@
   function openLightbox(index) {
     var img = visibleImages()[index];
     if (!img || !lightbox) return;
+    if (lightboxImg.getAttribute("src") !== img.url) {
+      lightboxImg.addEventListener("load", placeLikedMarks, { once: true });
+    }
     lightboxImg.src = img.url;
     lightboxImg.alt = img.name;
+    requestAnimationFrame(placeLikedMarks);
     setNameLink(lightboxCaption, img);
     lightbox.hidden = false;
     document.body.classList.add("gallery-lightbox-open");
@@ -660,10 +804,13 @@
 
   function downloadLikedButtonHtml() {
     return (
+      '<span class="gallery-liked-actions">' +
       '<button type="button" class="gallery-action-btn gallery-get-liked" data-action="download-liked" disabled>' +
       '<span class="gallery-like-label">Download liked</span> ' +
       '<span class="gallery-like-count">0</span>' +
-      "</button>"
+      "</button>" +
+      '<button type="button" class="gallery-action-btn" data-action="unlike-all" disabled>Unlike all</button>' +
+      "</span>"
     );
   }
 
@@ -677,6 +824,11 @@
       '<p class="gallery-meta"><span id="gallery-image-count"></span> · <code class="gallery-path">' +
       escapeHtml(state.dir) +
       "</code></p>" +
+      '<label class="gallery-name-filter" for="gallery-name-filter">Filter' +
+      '<input id="gallery-name-filter" type="text" spellcheck="false" autocomplete="off" value="' +
+      escapeHtml(state.nameFilter) +
+      '" title="Use * as a wildcard. *.* shows every file.">' +
+      "</label>" +
       "</header>"
     );
   }
@@ -687,9 +839,15 @@
     if (!images.length) {
       return (
         '<p class="gallery-empty">' +
-        (state.onlyLiked
-          ? "No images have been liked yet."
-          : "This directory has no images.") +
+        (function () {
+          if (!state.images.length) return "This directory has no images.";
+          var named = state.images.filter(function (img) {
+            return nameMatchesFilter(img.name, state.nameFilter);
+          });
+          if (!named.length) return "No images match " + state.nameFilter + ".";
+          if (state.onlyLiked) return "No images have been liked yet.";
+          return "No images match " + state.nameFilter + ".";
+        })() +
         "</p>"
       );
     }
@@ -720,12 +878,13 @@
       '<label class="gallery-filter"><input type="checkbox" id="gallery-only-liked"' +
       (state.onlyLiked ? " checked" : "") +
       "> Liked only</label>" +
-      '<span class="gallery-hint">Use ← → to browse · L to like</span>' +
+      '<span class="gallery-hint">Use ← → to browse · Shift+Space to like or unlike</span>' +
       "</div>" +
       '<div class="gallery-preview-stage" id="gallery-preview-stage">' +
+      '<span class="gallery-liked-mark" hidden aria-hidden="true">★</span>' +
       '<img id="gallery-preview-image" alt="" decoding="async">' +
       '<div class="gallery-preview-actions">' +
-      '<button type="button" class="gallery-action-btn gallery-like-toggle" id="gallery-like" aria-pressed="false">♡ Like</button>' +
+      '<button type="button" class="gallery-action-btn gallery-like-toggle" id="gallery-like" aria-pressed="false">☆ Like</button>' +
       '<button type="button" class="gallery-action-btn" id="gallery-view">View</button>' +
       '<button type="button" class="gallery-action-btn" id="gallery-download">Download</button>' +
       '<button type="button" class="gallery-action-btn" id="gallery-fit" aria-pressed="false">Fit to width</button>' +
@@ -764,7 +923,7 @@
           '" loading="lazy" decoding="async">' +
           '<span class="gallery-like-btn" role="button" tabindex="0" data-like-index="' +
           i +
-          '">♡</span>' +
+          '">☆</span>' +
           "</span>" +
           '<span class="gallery-grid-name">' +
           imageNameLinkHtml(img) +
@@ -845,6 +1004,16 @@
     } else if ((key === "l" || key === "L") && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
       toggleLike(state.index);
+    } else if (
+      (key === " " || event.code === "Space") &&
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.repeat
+    ) {
+      event.preventDefault();
+      toggleLike(state.index);
     }
   }
 
@@ -852,6 +1021,7 @@
     if (globalsBound) return;
     globalsBound = true;
     document.addEventListener("keydown", onKeydown);
+    window.addEventListener("resize", placeLikedMarks);
     document.addEventListener("fullscreenchange", function () {
       if (!document.fullscreenElement && state.fullscreen) closeFullscreen();
     });
@@ -932,8 +1102,37 @@
         render();
       });
     }
+    var nameFilter = document.getElementById("gallery-name-filter");
+    if (nameFilter) {
+      nameFilter.addEventListener("input", function () {
+        var caret = nameFilter.selectionStart;
+        var current = visibleImages()[state.index];
+        var currentName = current && current.name;
+        var next, i;
+        state.nameFilter = nameFilter.value;
+        next = visibleImages();
+        state.index = 0;
+        if (currentName) {
+          for (i = 0; i < next.length; i++) {
+            if (next[i].name === currentName) {
+              state.index = i;
+              break;
+            }
+          }
+        }
+        render();
+        var again = document.getElementById("gallery-name-filter");
+        if (again) {
+          again.focus();
+          if (typeof caret === "number") again.setSelectionRange(caret, caret);
+        }
+      });
+    }
     document.querySelectorAll('[data-action="download-liked"]').forEach(function (btn) {
       btn.addEventListener("click", function () { downloadLiked(); });
+    });
+    document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
+      btn.addEventListener("click", unlikeAll);
     });
     if (strip) {
       strip.addEventListener("click", function (event) {
@@ -976,7 +1175,7 @@
     if (state.index >= images.length) state.index = 0;
     setStatus("");
     rootEl.innerHTML = renderHeader() + renderPreview() + renderGrid();
-    document.title = basenameDir(state.dir) + " — Gallapp";
+    document.title = basenameDir(state.dir) + " — Gallery App";
     bindView();
     if (images.length) {
       updatePreview();
@@ -989,7 +1188,7 @@
   function showIntro() {
     var recent = loadRecent();
     var slot;
-    document.title = "Gallapp";
+    document.title = "Gallery App";
     rootEl.innerHTML = "";
     if (introTemplate) rootEl.appendChild(introTemplate.content.cloneNode(true));
     slot = document.getElementById("gallery-recent");
@@ -1029,13 +1228,13 @@
     state.dir = dir;
     if (dirInput) dirInput.value = dir;
     setStatus("Loading images from " + dir + "…");
-    document.title = basenameDir(dir) + " — Gallapp";
+    document.title = basenameDir(dir) + " — Gallery App";
     try {
       res = await fetch(url, { cache: "no-store" });
     } catch (err) {
       showIntro();
       setStatus(
-        "Could not read the directory. Open Gallapp through the HTTP server (http://localhost:…/gallapp/), not as a file.",
+        "Could not read the directory. Open Gallery App through the HTTP server (http://localhost:…/gallapp/), not as a file.",
         true
       );
       return;
@@ -1060,7 +1259,7 @@
     images = imagesFromListing(html, url);
     state.images = images;
     state.index = 0;
-    loadLikes();
+    await loadLikes();
     rememberDir(dir);
     if (!images.length) {
       rootEl.innerHTML = renderHeader();
