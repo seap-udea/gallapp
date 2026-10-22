@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local gallery: view images in a directory, like them, and download them.">
+  <title>Gallapp</title>
+  <link rel="stylesheet" href="gallery.css">
+</head>
+<body class="gallery-page">
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="./">Gallapp</a>
+      <form class="dir-form" id="dir-form" action="./" method="get">
+        <label for="dir-input">Directory</label>
+        <input id="dir-input" name="dir" type="text" spellcheck="false" autocomplete="off" placeholder="path/relative/to/the/directory" enterkeyhint="go">
+        <button type="submit">Open</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="gallery-main" id="gallery-root"></main>
+  <p class="gallery-status" id="gallery-status" hidden></p>
+
+  <div class="gallery-lightbox" id="gallery-lightbox" hidden>
+    <button type="button" class="gallery-lightbox-close" id="lightbox-close" aria-label="Close">×</button>
+    <img id="lightbox-image" alt="">
+    <p class="gallery-lightbox-caption" id="lightbox-caption"></p>
+  </div>
+
+  <div class="gallery-fullscreen" id="gallery-fullscreen" hidden>
+    <div class="gallery-fs-chrome">
+      <button type="button" class="gallery-fs-nav" id="fs-prev" aria-label="Previous image">‹</button>
+      <span class="gallery-fs-counter" id="fs-counter"></span>
+      <button type="button" class="gallery-fs-nav" id="fs-next" aria-label="Next image">›</button>
+      <button type="button" class="gallery-fs-like" id="fs-like" aria-pressed="false" aria-label="Like" title="Like">♡</button>
+      <button type="button" class="gallery-fs-close" id="fs-close" aria-label="Exit fullscreen">×</button>
+    </div>
+    <div class="gallery-fs-stage">
+      <img class="gallery-fs-image" id="fs-image" alt="">
+    </div>
+    <p class="gallery-fs-caption" id="fs-caption"></p>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-bottom">
+      Gallapp · likes are saved in this browser
+    </div>
+  </footer>
+
+  <template id="intro-template">
+    <section class="gallery-intro">
+      <h1>Local gallery</h1>
+      <p>Browse the images in a directory, like the ones you want, and download them when you are done choosing.</p>
+      <ol class="gallery-steps">
+        <li>In the <code>code</code> folder, start a server: <code>python3 -m http.server</code></li>
+        <li>Open <code>http://localhost:8000/gallapp/</code></li>
+        <li>Enter the directory path relative to <code>code</code>. For example <code>test_dev/paper_workshop_LSST/figs</code></li>
+      </ol>
+      <p>One liked image downloads as itself. Several liked images are packed into a <code>.zip</code>. If the directory contains an <code>index.html</code>, Python’s server shows that page and Gallapp cannot see the file list.</p>
+      <div id="gallery-recent"></div>
+    </section>
+  </template>
+
+  <script src="gallery.js"></script>
+</body>
+</html>
