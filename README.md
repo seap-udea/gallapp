@@ -41,11 +41,13 @@ Any static server works the same way, as long as a request for a directory retur
 
 - **Browse.** The large preview, the filmstrip, and the grid show the same set of images. Use the arrows, the on-screen buttons, or a horizontal swipe.
 - **Filter.** The box under the image count takes a filename pattern. `*` matches any text, so `1998_*` shows names that start with `1998_`. The default `*.*` shows every file.
-- **Like.** Use **Like**, the star on a thumbnail, `L`, or Shift+Space. Shift+Space toggles the image on screen. A star appears in the top-right corner while it is liked. **Unlike all** clears every like in the directory. **Liked only** hides everything else.
+- **Like.** Use **Like**, the star on a thumbnail, `L`, or Shift+Space. Shift+Space toggles the image on screen. A star appears in the top-right corner while it is liked. **Unlike all** clears every like in the directory. **Liked only** and **No like only** filter by like state; **All** shows everything.
+- **Jump.** Type a number in the counter (`1 / N`) and press Enter to go to that image.
+- **Resume.** The current image name is saved in `.gallapp_position` in the folder (and in the browser as a backup), so reopening the directory continues where you left off.
 - **Download.** **Download** saves the image on screen. **Download liked** saves the one liked image, or a `.zip` named after the folder when more than one image is liked.
 - **View, Fit to width, and Fullscreen** change how the current image is shown. `Esc` closes the lightbox and fullscreen.
 
-Likes are saved in a `.gallapp_likes` file inside the image folder, one filename per line. They stay after a reload and are shared by anyone using that folder. With `python3 -m http.server` the page can still browse images, but it cannot write the file, so likes stay in the browser instead. Directories you have opened are listed on the start page.
+Likes are saved in a `.gallapp_likes` file inside the image folder, one filename per line. The current image is saved in `.gallapp_position` as a single filename. Both stay after a reload and are shared by anyone using that folder. With `python3 -m http.server` the page can still browse images, but it cannot write those files, so likes and position stay in the browser instead. Directories you have opened are listed on the start page.
 
 ```text
 1997_SX3_multiband_photometry_compare.webp
@@ -67,7 +69,7 @@ If the directory contains `index.html` (or `index.htm`), Python’s server retur
 | `index.html` | Page shell and the start-up instructions. |
 | `gallery.css` | Layout and gallery styling. |
 | `gallery.js` | Directory listing, likes, preview, and zip download. |
-| `server.py` | Local file server. Also writes `.gallapp_likes` into the image folder. |
+| `server.py` | Local file server. Also writes `.gallapp_likes` and `.gallapp_position` into the image folder. |
 | `assets/logo-seap-banner.webp` | SEAP-UdeA mark shown beside Gallery App. It links to [seap-udea.github.io](https://seap-udea.github.io/). |
 
 There is no build step. The zip is built in the browser and stores the image bytes as they are.

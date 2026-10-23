@@ -303,19 +303,25 @@
   var fsNext = document.getElementById("fs-next");
   var fsLike = document.getElementById("fs-like");
 
+  var FILMSTRIP_RADIUS = 24;
   var state = {
     dir: "",
     images: [],
     index: 0,
     liked: {},
-    onlyLiked: false,
+    likeFilter: "all",
     nameFilter: "*.*",
     fitWidth: false,
     fullscreen: false,
     downloading: false,
     progress: "",
+    visibleCache: null,
+    filmstripStart: -1,
+    filmstripEnd: -1,
   };
   var globalsBound = false;
+  var prefetchLink = null;
+  var positionSaveTimer = null;
 
   function escapeHtml(value) {
     return String(value == null ? "" : value)
@@ -350,8 +356,16 @@
     return "gallapp-likes:" + state.dir;
   }
 
+  function positionStorageKey() {
+    return "gallapp-position:" + state.dir;
+  }
+
   function likesFileUrl() {
     return directoryUrl(state.dir) + ".gallapp_likes";
+  }
+
+  function positionFileUrl() {
+    return directoryUrl(state.dir) + ".gallapp_position";
   }
 
   function likesText() {
@@ -433,6 +447,75 @@
       });
   }
 
+  function currentImageName() {
+    var img = visibleImages()[state.index];
+    return img ? img.name : "";
+  }
+
+  function indexOfName(name, images) {
+    var i;
+    if (!name) return -1;
+    for (i = 0; i < images.length; i++) {
+      if (images[i].name === name) return i;
+    }
+    return -1;
+  }
+
+  async function loadPosition() {
+    var name = "";
+    try {
+      var res = await fetch(positionFileUrl(), { cache: "no-store" });
+      if (res.ok) {
+        name = String(await res.text())
+          .split(/\r?\n/)
+          .map(function (line) {
+            return line.trim();
+          })
+          .filter(function (line) {
+            return line && line.charAt(0) !== "#";
+          })[0] || "";
+      }
+    } catch (err) {}
+    if (!name) {
+      try {
+        name = window.localStorage.getItem(positionStorageKey()) || "";
+      } catch (err) {}
+    }
+    return name;
+  }
+
+  function savePositionNow() {
+    var name = currentImageName();
+    var dir = state.dir;
+    var url = positionFileUrl();
+    if (!name || !dir) return;
+    try {
+      window.localStorage.setItem(positionStorageKey(), name);
+    } catch (err) {}
+    state.positionSave = Promise.resolve(state.positionSave)
+      .catch(function () {})
+      .then(function () {
+        if (dir !== state.dir) return;
+        return fetch(url, {
+          method: "PUT",
+          cache: "no-store",
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: name + "\n",
+        }).then(function (res) {
+          if (!res.ok) throw new Error(String(res.status));
+        });
+      })
+      .catch(function () {});
+  }
+
+  function savePosition() {
+    if (positionSaveTimer) clearTimeout(positionSaveTimer);
+    positionSaveTimer = setTimeout(function () {
+      positionSaveTimer = null;
+      savePositionNow();
+    }, 250);
+  }
+
   function loadRecent() {
     try {
       var list = JSON.parse(window.localStorage.getItem(RECENT_KEY) || "[]");
@@ -457,16 +540,101 @@
     return !!(img && state.liked[img.name]);
   }
 
+  function invalidateVisible() {
+    state.visibleCache = null;
+  }
+
   function visibleImages() {
+    if (state.visibleCache) return state.visibleCache;
     var list = state.images.filter(function (img) {
       return nameMatchesFilter(img.name, state.nameFilter);
     });
-    if (!state.onlyLiked) return list;
-    return list.filter(isLiked);
+    if (state.likeFilter === "liked") list = list.filter(isLiked);
+    else if (state.likeFilter === "unliked") {
+      list = list.filter(function (img) {
+        return !isLiked(img);
+      });
+    }
+    state.visibleCache = list;
+    return list;
   }
 
   function likedImages() {
     return state.images.filter(isLiked);
+  }
+
+  function likedCount() {
+    return Object.keys(state.liked).length;
+  }
+
+  function filmstripWindow(images, index) {
+    var start = Math.max(0, index - FILMSTRIP_RADIUS);
+    var end = Math.min(images.length, index + FILMSTRIP_RADIUS + 1);
+    return { start: start, end: end };
+  }
+
+  function filmstripItemHtml(img, i, activeIndex) {
+    return (
+      '<button type="button" class="gallery-filmstrip-item' +
+      (i === activeIndex ? " is-active" : "") +
+      (isLiked(img) ? " is-liked" : "") +
+      '" data-index="' +
+      i +
+      '" title="' +
+      escapeHtml(img.name) +
+      '">' +
+      '<img src="' +
+      escapeHtml(img.url) +
+      '" alt="" loading="lazy" decoding="async">' +
+      "</button>"
+    );
+  }
+
+  function refreshFilmstrip(images, force) {
+    var strip = document.getElementById("gallery-filmstrip");
+    var win, html, i;
+    if (!strip || !images.length) return;
+    win = filmstripWindow(images, state.index);
+    if (
+      !force &&
+      state.filmstripStart === win.start &&
+      state.filmstripEnd === win.end
+    ) {
+      return;
+    }
+    html = "";
+    for (i = win.start; i < win.end; i++) {
+      html += filmstripItemHtml(images[i], i, state.index);
+    }
+    strip.innerHTML = html;
+    state.filmstripStart = win.start;
+    state.filmstripEnd = win.end;
+  }
+
+  function prefetchAround(images, index) {
+    var urls = [];
+    var i, img, link;
+    [-1, 1, 2].forEach(function (delta) {
+      img = images[index + delta];
+      if (img) urls.push(img.url);
+    });
+    if (!urls.length) return;
+    if (!prefetchLink) {
+      prefetchLink = document.createElement("link");
+      prefetchLink.rel = "prefetch";
+      prefetchLink.as = "image";
+      document.head.appendChild(prefetchLink);
+    }
+    for (i = 0; i < urls.length; i++) {
+      link = document.createElement("link");
+      link.rel = "prefetch";
+      link.as = "image";
+      link.href = urls[i];
+      document.head.appendChild(link);
+      setTimeout(function (el) {
+        el.remove();
+      }.bind(null, link), 30000);
+    }
   }
 
   function imageNameLinkHtml(img) {
@@ -507,31 +675,7 @@
     return "Download liked";
   }
 
-  function updateLikeUI() {
-    var current = visibleImages()[state.index];
-    var count = likedImages().length;
-    var grid = document.getElementById("gallery-grid");
-    var strip = document.getElementById("gallery-filmstrip");
-    setLikeButton(document.getElementById("gallery-like"), isLiked(current), true);
-    setLikeButton(fsLike, isLiked(current), false);
-    document.querySelectorAll(".gallery-liked-mark").forEach(function (el) {
-      el.hidden = !isLiked(current);
-    });
-    placeLikedMarks();
-    if (grid) {
-      grid.querySelectorAll(".gallery-grid-item").forEach(function (el) {
-        var img = visibleImages()[Number(el.getAttribute("data-index"))];
-        var on = isLiked(img);
-        el.classList.toggle("is-liked", on);
-        setLikeButton(el.querySelector(".gallery-like-btn"), on, false);
-      });
-    }
-    if (strip) {
-      strip.querySelectorAll(".gallery-filmstrip-item").forEach(function (el) {
-        var img = visibleImages()[Number(el.getAttribute("data-index"))];
-        el.classList.toggle("is-liked", isLiked(img));
-      });
-    }
+  function updateLikedActions(count) {
     document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
       btn.disabled = count === 0;
       btn.title = count ? "Remove every like in this directory" : "No liked images";
@@ -558,6 +702,41 @@
         count +
         " liked";
     }
+  }
+
+  function updateCurrentLikeUI() {
+    var images = visibleImages();
+    var current = images[state.index];
+    var on = isLiked(current);
+    setLikeButton(document.getElementById("gallery-like"), on, true);
+    setLikeButton(fsLike, on, false);
+    document.querySelectorAll(".gallery-liked-mark").forEach(function (el) {
+      el.hidden = !on;
+    });
+    placeLikedMarks();
+    updateLikedActions(likedCount());
+  }
+
+  function updateItemLikeUI(index) {
+    var images = visibleImages();
+    var img = images[index];
+    var on = isLiked(img);
+    var gridItem = document.querySelector(
+      '#gallery-grid .gallery-grid-item[data-index="' + index + '"]'
+    );
+    var stripItem = document.querySelector(
+      '#gallery-filmstrip .gallery-filmstrip-item[data-index="' + index + '"]'
+    );
+    if (gridItem) {
+      gridItem.classList.toggle("is-liked", on);
+      setLikeButton(gridItem.querySelector(".gallery-like-btn"), on, false);
+    }
+    if (stripItem) stripItem.classList.toggle("is-liked", on);
+  }
+
+  function updateLikeUI() {
+    updateCurrentLikeUI();
+    updateItemLikeUI(state.index);
   }
 
   function triggerDownload(href, filename, blobUrl) {
@@ -622,15 +801,16 @@
   }
 
   function unlikeAll() {
-    if (!likedImages().length) return;
+    if (!likedCount()) return;
     state.liked = {};
     saveLikes();
-    if (state.onlyLiked) {
-      state.index = 0;
-      render();
-      return;
-    }
-    updateLikeUI();
+    invalidateVisible();
+    state.index = 0;
+    render();
+  }
+
+  function likeFilterActive() {
+    return state.likeFilter === "liked" || state.likeFilter === "unliked";
   }
 
   function toggleLike(index) {
@@ -640,25 +820,63 @@
     if (state.liked[img.name]) delete state.liked[img.name];
     else state.liked[img.name] = true;
     saveLikes();
-    if (state.onlyLiked) {
+    if (likeFilterActive()) {
+      invalidateVisible();
       next = visibleImages();
       if (!next.length) state.index = 0;
       else if (state.index >= next.length) state.index = next.length - 1;
       render();
+      savePosition();
       return;
     }
-    updateLikeUI();
+    updateCurrentLikeUI();
+    updateItemLikeUI(index);
+    savePosition();
+  }
+
+  function jumpToNumber(raw) {
+    var images = visibleImages();
+    var n = images.length;
+    var value = parseInt(String(raw || "").trim(), 10);
+    if (!n || !isFinite(value)) {
+      updateCounterFields(images);
+      return;
+    }
+    if (value < 1) value = 1;
+    if (value > n) value = n;
+    setIndex(value - 1);
+    updateCounterFields(images);
+  }
+
+  function updateCounterFields(images) {
+    var jump = document.getElementById("gallery-jump");
+    var total = document.getElementById("gallery-counter-total");
+    images = images || visibleImages();
+    if (jump && document.activeElement !== jump) {
+      jump.value = images.length ? String(state.index + 1) : "";
+      jump.max = String(Math.max(images.length, 1));
+      jump.disabled = !images.length;
+    }
+    if (total) total.textContent = String(images.length);
   }
 
   function setIndex(next) {
     var images = visibleImages();
     var n = images.length;
+    var prev;
     if (!n) return;
+    prev = state.index;
     state.index = ((next % n) + n) % n;
-    updatePreview();
-    updateGridActive();
+    if (state.index === prev) {
+      updateCounterFields(images);
+      return;
+    }
+    updatePreview(prev);
+    updateGridActive(prev);
     updateFullscreen();
-    updateLikeUI();
+    updateCurrentLikeUI();
+    prefetchAround(images, state.index);
+    savePosition();
   }
 
   function placeLikedMarks() {
@@ -696,14 +914,13 @@
     placeLikedMarks();
   }
 
-  function updatePreview() {
+  function updatePreview(prevIndex) {
     var imgEl = document.getElementById("gallery-preview-image");
-    var counter = document.getElementById("gallery-counter");
     var nameEl = document.getElementById("gallery-preview-name");
     var strip = document.getElementById("gallery-filmstrip");
     var images = visibleImages();
     var img = images[state.index];
-    var thumb, target;
+    var thumb, prevThumb, target;
     if (!imgEl || !img) return;
     if (imgEl.getAttribute("src") !== img.url) {
       imgEl.addEventListener("load", placeLikedMarks, { once: true });
@@ -712,25 +929,31 @@
     imgEl.alt = img.name;
     requestAnimationFrame(placeLikedMarks);
     if (nameEl) setNameLink(nameEl, img);
-    if (counter) counter.textContent = state.index + 1 + " / " + images.length;
-    if (strip) {
-      thumb = strip.querySelector('[data-index="' + state.index + '"]');
-      if (thumb) {
-        target = thumb.offsetLeft - (strip.clientWidth - thumb.offsetWidth) / 2;
-        strip.scrollTo({ left: Math.max(0, target), behavior: "smooth" });
-      }
-      strip.querySelectorAll(".gallery-filmstrip-item").forEach(function (el) {
-        el.classList.toggle("is-active", Number(el.getAttribute("data-index")) === state.index);
-      });
+    updateCounterFields(images);
+    if (!strip) return;
+    refreshFilmstrip(images, false);
+    if (typeof prevIndex === "number") {
+      prevThumb = strip.querySelector('[data-index="' + prevIndex + '"]');
+      if (prevThumb) prevThumb.classList.remove("is-active");
+    }
+    thumb = strip.querySelector('[data-index="' + state.index + '"]');
+    if (thumb) {
+      thumb.classList.add("is-active");
+      target = thumb.offsetLeft - (strip.clientWidth - thumb.offsetWidth) / 2;
+      strip.scrollTo({ left: Math.max(0, target), behavior: "auto" });
     }
   }
 
-  function updateGridActive() {
+  function updateGridActive(prevIndex) {
     var grid = document.getElementById("gallery-grid");
+    var prev, next;
     if (!grid) return;
-    grid.querySelectorAll(".gallery-grid-item").forEach(function (el) {
-      el.classList.toggle("is-active", Number(el.getAttribute("data-index")) === state.index);
-    });
+    if (typeof prevIndex === "number") {
+      prev = grid.querySelector('[data-index="' + prevIndex + '"]');
+      if (prev) prev.classList.remove("is-active");
+    }
+    next = grid.querySelector('[data-index="' + state.index + '"]');
+    if (next) next.classList.add("is-active");
   }
 
   function updateFullscreen() {
@@ -845,39 +1068,44 @@
             return nameMatchesFilter(img.name, state.nameFilter);
           });
           if (!named.length) return "No images match " + state.nameFilter + ".";
-          if (state.onlyLiked) return "No images have been liked yet.";
+          if (state.likeFilter === "liked") return "No images have been liked yet.";
+          if (state.likeFilter === "unliked") return "Every matching image is liked.";
           return "No images match " + state.nameFilter + ".";
         })() +
         "</p>"
       );
     }
-    filmstrip = images
-      .map(function (img, i) {
-        return (
-          '<button type="button" class="gallery-filmstrip-item' +
-          (i === state.index ? " is-active" : "") +
-          (isLiked(img) ? " is-liked" : "") +
-          '" data-index="' +
-          i +
-          '" title="' +
-          escapeHtml(img.name) +
-          '">' +
-          '<img src="' +
-          escapeHtml(img.url) +
-          '" alt="" loading="lazy" decoding="async">' +
-          "</button>"
-        );
-      })
-      .join("");
+    (function () {
+      var win = filmstripWindow(images, state.index);
+      var i;
+      filmstrip = "";
+      for (i = win.start; i < win.end; i++) {
+        filmstrip += filmstripItemHtml(images[i], i, state.index);
+      }
+      state.filmstripStart = win.start;
+      state.filmstripEnd = win.end;
+    })();
     return (
       '<section class="gallery-preview" aria-label="Image preview">' +
       '<div class="gallery-preview-toolbar">' +
       '<button type="button" class="gallery-nav-btn" id="gallery-prev" aria-label="Previous image">‹</button>' +
-      '<span class="gallery-counter" id="gallery-counter"></span>' +
+      '<span class="gallery-counter" id="gallery-counter">' +
+      '<input id="gallery-jump" class="gallery-jump" type="number" min="1" inputmode="numeric" aria-label="Go to image number">' +
+      '<span class="gallery-counter-sep">/</span>' +
+      '<span id="gallery-counter-total">0</span>' +
+      "</span>" +
       '<button type="button" class="gallery-nav-btn" id="gallery-next" aria-label="Next image">›</button>' +
-      '<label class="gallery-filter"><input type="checkbox" id="gallery-only-liked"' +
-      (state.onlyLiked ? " checked" : "") +
+      '<span class="gallery-like-filters" role="radiogroup" aria-label="Like filter">' +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="all"' +
+      (state.likeFilter === "all" ? " checked" : "") +
+      "> All</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="liked"' +
+      (state.likeFilter === "liked" ? " checked" : "") +
       "> Liked only</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="unliked"' +
+      (state.likeFilter === "unliked" ? " checked" : "") +
+      "> No like only</label>" +
+      "</span>" +
       '<span class="gallery-hint">Use ← → to browse · Shift+Space to like or unlike</span>' +
       "</div>" +
       '<div class="gallery-preview-stage" id="gallery-preview-stage">' +
@@ -933,7 +1161,7 @@
       })
       .join("");
     return (
-      '<section class="gallery-grid-section" aria-label="All images">' +
+      '<section class="gallery-grid-section" id="gallery-grid-section" aria-label="All images">' +
       '<div class="gallery-grid-header">' +
       '<h2 class="gallery-section-heading">All images</h2>' +
       downloadLikedButtonHtml() +
@@ -1063,88 +1291,133 @@
     bindSwipe(lightbox);
   }
 
-  function bindView() {
-    var prevBtn = document.getElementById("gallery-prev");
-    var nextBtn = document.getElementById("gallery-next");
-    var likeBtn = document.getElementById("gallery-like");
-    var viewBtn = document.getElementById("gallery-view");
-    var downloadBtn = document.getElementById("gallery-download");
-    var fitBtn = document.getElementById("gallery-fit");
-    var fullscreenBtn = document.getElementById("gallery-fullscreen");
-    var onlyLiked = document.getElementById("gallery-only-liked");
-    var strip = document.getElementById("gallery-filmstrip");
-    var grid = document.getElementById("gallery-grid");
-    var stage = document.getElementById("gallery-preview-stage");
+  function bindView(scope) {
+    var prevBtn, nextBtn, likeBtn, viewBtn, downloadBtn, fitBtn, fullscreenBtn;
+    var nameFilter, strip, grid, stage;
+    scope = scope || "all";
 
-    bindSwipe(stage);
-    if (prevBtn) prevBtn.addEventListener("click", function () { setIndex(state.index - 1); });
-    if (nextBtn) nextBtn.addEventListener("click", function () { setIndex(state.index + 1); });
-    if (likeBtn) likeBtn.addEventListener("click", function () { toggleLike(state.index); });
-    if (viewBtn) viewBtn.addEventListener("click", function () { openLightbox(state.index); });
-    if (downloadBtn) {
-      downloadBtn.addEventListener("click", function () {
-        downloadImage(visibleImages()[state.index]);
+    if (scope === "all" || scope === "preview") {
+      prevBtn = document.getElementById("gallery-prev");
+      nextBtn = document.getElementById("gallery-next");
+      likeBtn = document.getElementById("gallery-like");
+      viewBtn = document.getElementById("gallery-view");
+      downloadBtn = document.getElementById("gallery-download");
+      fitBtn = document.getElementById("gallery-fit");
+      fullscreenBtn = document.getElementById("gallery-fullscreen");
+      strip = document.getElementById("gallery-filmstrip");
+      stage = document.getElementById("gallery-preview-stage");
+      nameFilter = document.getElementById("gallery-name-filter");
+
+      bindSwipe(stage);
+      if (prevBtn) prevBtn.addEventListener("click", function () { setIndex(state.index - 1); });
+      if (nextBtn) nextBtn.addEventListener("click", function () { setIndex(state.index + 1); });
+      if (likeBtn) likeBtn.addEventListener("click", function () { toggleLike(state.index); });
+      if (viewBtn) viewBtn.addEventListener("click", function () { openLightbox(state.index); });
+      if (downloadBtn) {
+        downloadBtn.addEventListener("click", function () {
+          downloadImage(visibleImages()[state.index]);
+        });
+      }
+      if (fitBtn) {
+        fitBtn.addEventListener("click", function () {
+          state.fitWidth = !state.fitWidth;
+          applyFitWidth();
+        });
+      }
+      if (fullscreenBtn) {
+        fullscreenBtn.addEventListener("click", function () { openFullscreen(state.index); });
+      }
+      document.querySelectorAll('input[name="gallery-like-filter"]').forEach(function (radio) {
+        radio.addEventListener("change", function () {
+          var keep = currentImageName();
+          var next, idx;
+          if (!radio.checked) return;
+          state.likeFilter = radio.value;
+          invalidateVisible();
+          next = visibleImages();
+          idx = indexOfName(keep, next);
+          state.index = idx >= 0 ? idx : 0;
+          render();
+          savePosition();
+        });
       });
-    }
-    if (fitBtn) {
-      fitBtn.addEventListener("click", function () {
-        state.fitWidth = !state.fitWidth;
-        applyFitWidth();
-      });
-    }
-    if (fullscreenBtn) {
-      fullscreenBtn.addEventListener("click", function () { openFullscreen(state.index); });
-    }
-    if (onlyLiked) {
-      onlyLiked.addEventListener("change", function () {
-        state.onlyLiked = onlyLiked.checked;
-        state.index = 0;
-        render();
-      });
-    }
-    var nameFilter = document.getElementById("gallery-name-filter");
-    if (nameFilter) {
-      nameFilter.addEventListener("input", function () {
-        var caret = nameFilter.selectionStart;
-        var current = visibleImages()[state.index];
-        var currentName = current && current.name;
-        var next, i;
-        state.nameFilter = nameFilter.value;
-        next = visibleImages();
-        state.index = 0;
-        if (currentName) {
-          for (i = 0; i < next.length; i++) {
-            if (next[i].name === currentName) {
-              state.index = i;
-              break;
+      (function bindJump() {
+        var jump = document.getElementById("gallery-jump");
+        if (!jump) return;
+        jump.addEventListener("keydown", function (event) {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            jumpToNumber(jump.value);
+            jump.blur();
+          } else if (event.key === "Escape") {
+            event.preventDefault();
+            updateCounterFields();
+            jump.blur();
+          }
+        });
+        jump.addEventListener("change", function () {
+          jumpToNumber(jump.value);
+        });
+        jump.addEventListener("focus", function () {
+          jump.select();
+        });
+      })();
+      if (nameFilter) {
+        nameFilter.addEventListener("input", function () {
+          var caret = nameFilter.selectionStart;
+          var current = visibleImages()[state.index];
+          var currentName = current && current.name;
+          var next, i, again;
+          state.nameFilter = nameFilter.value;
+          invalidateVisible();
+          next = visibleImages();
+          state.index = 0;
+          if (currentName) {
+            for (i = 0; i < next.length; i++) {
+              if (next[i].name === currentName) {
+                state.index = i;
+                break;
+              }
             }
           }
-        }
-        render();
-        var again = document.getElementById("gallery-name-filter");
-        if (again) {
-          again.focus();
-          if (typeof caret === "number") again.setSelectionRange(caret, caret);
-        }
+          render();
+          again = document.getElementById("gallery-name-filter");
+          if (again) {
+            again.focus();
+            if (typeof caret === "number") again.setSelectionRange(caret, caret);
+          }
+        });
+      }
+      document.querySelectorAll('[data-action="download-liked"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", function () { downloadLiked(); });
       });
-    }
-    document.querySelectorAll('[data-action="download-liked"]').forEach(function (btn) {
-      btn.addEventListener("click", function () { downloadLiked(); });
-    });
-    document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
-      btn.addEventListener("click", unlikeAll);
-    });
-    if (strip) {
-      strip.addEventListener("click", function (event) {
-        var item = event.target.closest("[data-index]");
-        if (!item) return;
-        setIndex(Number(item.getAttribute("data-index")));
+      document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", unlikeAll);
       });
+      if (strip) {
+        strip.addEventListener("click", function (event) {
+          var item = event.target.closest("[data-index]");
+          if (!item) return;
+          setIndex(Number(item.getAttribute("data-index")));
+        });
+      }
     }
-    if (grid) {
+
+    if (scope === "all" || scope === "grid") {
+      grid = document.getElementById("gallery-grid");
+      if (!grid) return;
+      document.querySelectorAll("#gallery-grid-section [data-action='download-liked']").forEach(function (btn) {
+        btn.addEventListener("click", function () { downloadLiked(); });
+      });
+      document.querySelectorAll("#gallery-grid-section [data-action='unlike-all']").forEach(function (btn) {
+        btn.addEventListener("click", unlikeAll);
+      });
       grid.addEventListener("click", function (event) {
         var like = event.target.closest(".gallery-like-btn");
         var item;
+        var preview;
         if (like) {
           event.preventDefault();
           event.stopPropagation();
@@ -1155,7 +1428,7 @@
         item = event.target.closest("[data-index]");
         if (!item) return;
         setIndex(Number(item.getAttribute("data-index")));
-        var preview = document.querySelector(".gallery-preview");
+        preview = document.querySelector(".gallery-preview");
         if (preview) preview.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       grid.addEventListener("keydown", function (event) {
@@ -1172,17 +1445,33 @@
 
   function render() {
     var images = visibleImages();
+    var gridHtml;
     if (state.index >= images.length) state.index = 0;
     setStatus("");
-    rootEl.innerHTML = renderHeader() + renderPreview() + renderGrid();
+    // Paint the preview first so arrow navigation works before the
+    // full thumbnail grid (thousands of nodes) is inserted.
+    rootEl.innerHTML = renderHeader() + renderPreview();
     document.title = basenameDir(state.dir) + " — Gallery App";
-    bindView();
+    bindView("preview");
     if (images.length) {
       updatePreview();
       applyFitWidth();
+      updateCurrentLikeUI();
+      prefetchAround(images, state.index);
+    } else {
+      updateCurrentLikeUI();
     }
-    updateGridActive();
-    updateLikeUI();
+    gridHtml = renderGrid();
+    if (gridHtml) {
+      requestAnimationFrame(function () {
+        var section = document.createElement("div");
+        section.innerHTML = gridHtml;
+        while (section.firstChild) rootEl.appendChild(section.firstChild);
+        bindView("grid");
+        updateGridActive();
+        updateItemLikeUI(state.index);
+      });
+    }
   }
 
   function showIntro() {
@@ -1258,12 +1547,19 @@
     }
     images = imagesFromListing(html, url);
     state.images = images;
+    invalidateVisible();
     state.index = 0;
+    state.filmstripStart = -1;
+    state.filmstripEnd = -1;
     await loadLikes();
+    (function restorePosition(savedName) {
+      var idx = indexOfName(savedName, visibleImages());
+      state.index = idx >= 0 ? idx : 0;
+    })(await loadPosition());
     rememberDir(dir);
     if (!images.length) {
       rootEl.innerHTML = renderHeader();
-      updateLikeUI();
+      updateCurrentLikeUI();
       setStatus("No images in " + dir + ".", true);
       return;
     }

@@ -2,8 +2,8 @@
 """Local server for Gallery App.
 
 Serves the current directory like ``python3 -m http.server``, and also accepts
-PUT requests that write ``.gallapp_likes`` inside an image folder. It listens
-on localhost only.
+PUT requests that write ``.gallapp_likes`` or ``.gallapp_position`` inside an
+image folder. It listens on localhost only.
 """
 
 import os
@@ -11,15 +11,20 @@ import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
-LIKES_NAME = ".gallapp_likes"
+WRITABLE = {".gallapp_likes", ".gallapp_position"}
 MAX_BYTES = 1_000_000
+
+
+def _valid_name(name):
+    return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name and "\x00" not in name
 
 
 class GalleryHandler(SimpleHTTPRequestHandler):
     def do_PUT(self):
         rel = unquote(self.path.split("?", 1)[0]).lstrip("/")
-        if os.path.basename(rel) != LIKES_NAME:
-            self.send_error(405, "Only .gallapp_likes can be written")
+        base = os.path.basename(rel)
+        if base not in WRITABLE:
+            self.send_error(405, "Only .gallapp_likes and .gallapp_position can be written")
             return
 
         root = os.path.realpath(os.getcwd())
@@ -28,7 +33,7 @@ class GalleryHandler(SimpleHTTPRequestHandler):
             inside = os.path.commonpath([root, dest]) == root
         except ValueError:
             inside = False
-        if not inside or os.path.basename(dest) != LIKES_NAME:
+        if not inside or os.path.basename(dest) != base:
             self.send_error(403, "Path is outside the server root")
             return
 
@@ -43,14 +48,14 @@ class GalleryHandler(SimpleHTTPRequestHandler):
             self.send_error(400, "Bad Content-Length")
             return
         if length < 0 or length > MAX_BYTES:
-            self.send_error(413, "Likes file is too large")
+            self.send_error(413, "Payload is too large")
             return
 
         raw = self.rfile.read(length) if length else b""
         try:
             text = raw.decode("utf-8")
         except UnicodeError:
-            self.send_error(400, "Likes file must be UTF-8")
+            self.send_error(400, "Payload must be UTF-8")
             return
 
         names = []
@@ -58,17 +63,19 @@ class GalleryHandler(SimpleHTTPRequestHandler):
             name = line.strip()
             if not name or name.startswith("#"):
                 continue
-            if (
-                name in (".", "..")
-                or "/" in name
-                or "\\" in name
-                or "\x00" in name
-            ):
+            if not _valid_name(name):
                 self.send_error(400, "Invalid image name: " + name)
                 return
             names.append(name)
 
-        body = ("\n".join(names) + ("\n" if names else "")).encode("utf-8")
+        if base == ".gallapp_position":
+            if len(names) > 1:
+                self.send_error(400, ".gallapp_position accepts at most one filename")
+                return
+            body = (names[0] + "\n").encode("utf-8") if names else b""
+        else:
+            body = ("\n".join(names) + ("\n" if names else "")).encode("utf-8")
+
         tmp = dest + ".tmp"
         try:
             with open(tmp, "wb") as handle:
