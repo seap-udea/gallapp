@@ -8,14 +8,14 @@ It follows the interaction of the [SEAP-UdeA gallery](https://seap-udea.github.i
 
 The page has to be opened through an HTTP server. Opening `index.html` as a file cannot list a directory.
 
-Start the server in the folder that should be the site root — the folder that contains both `gallapp/` and the image directories. In this project that folder is `code/`:
+Start the server in the folder that should be the site root — the folder that contains both `gallapp/` and the image directories you want to browse:
 
 ```bash
-cd code
+cd /path/to/site-root
 python3 gallapp/server.py
 ```
 
-That server lists directories the same way as `python3 -m http.server`, and it is what writes likes to disk. It listens on `127.0.0.1` port `8000`. Pass another port as the argument (`python3 gallapp/server.py 8080`).
+That server lists directories the same way as `python3 -m http.server`, and it is what writes likes and position to disk. It listens on `127.0.0.1` port `8000`. Pass another port as the argument (`python3 gallapp/server.py 8080`).
 
 Then open:
 
@@ -23,35 +23,84 @@ Then open:
 http://localhost:8000/gallapp/
 ```
 
-Type a directory path relative to the server root and press **Open**. For example:
+Type a directory path relative to the server root and press **Open** (default session). For example:
 
 ```text
-test_dev/paper_workshop_LSST/figs
+images/my-folder
 ```
 
 The same folder can be opened directly:
 
 ```text
-http://localhost:8000/gallapp/?dir=test_dev/paper_workshop_LSST/figs
+http://localhost:8000/gallapp/?dir=images/my-folder
 ```
 
-Any static server works the same way, as long as a request for a directory returns an HTML file listing (the listing from `python3 -m http.server` is the one Gallery App is written for).
+**Sessions.** Several people can review the same directory with separate likes and resume positions.
 
-## Using the gallery
+1. Enter the directory path.
+2. Press **New session** beside **Open**.
+3. In the on-page dialog, type a **session name**: letters, digits, `_`, or `-` only (no spaces; max 40 characters). Examples: `alice`, `review_1`, `team-b`.
+4. Confirm **Open session** — Gallery App opens that session in a **new browser tab**.
 
-- **Browse.** The large preview, the filmstrip, and the grid show the same set of images. Use the arrows, the on-screen buttons, or a horizontal swipe.
-- **Filter.** The box under the image count takes a filename pattern. `*` matches any text, so `1998_*` shows names that start with `1998_`. The default `*.*` shows every file.
-- **Like.** Use **Like**, the star on a thumbnail, `L`, or Shift+Space. Shift+Space toggles the image on screen. A star appears in the top-right corner while it is liked. **Unlike all** clears every like in the directory. **Liked only** and **No like only** filter by like state; **All** shows everything.
-- **Jump.** Type a number in the counter (`1 / N`) and press Enter to go to that image.
-- **Resume.** The current image name is saved in `.gallapp_position` in the folder (and in the browser as a backup), so reopening the directory continues where you left off.
-- **Download.** **Download** saves the image on screen. **Download liked** saves the one liked image, or a `.zip` named after the folder when more than one image is liked.
-- **View, Fit to width, and Fullscreen** change how the current image is shown. `Esc` closes the lightbox and fullscreen.
-
-Likes are saved in a `.gallapp_likes` file inside the image folder, one filename per line. The current image is saved in `.gallapp_position` as a single filename. Both stay after a reload and are shared by anyone using that folder. With `python3 -m http.server` the page can still browse images, but it cannot write those files, so likes and position stay in the browser instead. Directories you have opened are listed on the start page.
+Likes and last-viewed position are stored per session in the image folder. Share the tab URL (or use **Copy status**) so others join the same named session. **Open** without a session uses the **default** session. Reusing an existing name rejoins that session.
 
 ```text
-1997_SX3_multiband_photometry_compare.webp
-1998_HH100_multiband_photometry_compare.webp
+http://localhost:8000/gallapp/?dir=images/my-folder&session=alice
+```
+
+## Features
+
+- **Browse.** Large preview, horizontal filmstrip, and optional thumbnail grid. Move with the arrows, first/last, swipe, or the counter field.
+- **Named sessions.** **New session** opens an on-page name dialog, then a new tab for that session. Each name gets its own likes and position files. Omit `session` for the default session.
+- **Like / unlike.** Mark images with **Like**, the star on a thumbnail, `L`, or Shift+Space. Liked images show a gold star and a thick border in the grid. **Unlike all** clears every like in the current session.
+- **Like filters.** Radios **All**, **Liked only**, and **No like only** limit what you see.
+- **Name filter.** Pattern under the image count. `*` is a wildcard (`plot_*`). Default `*.*`.
+- **Jump.** Type a number in `1 / N` and press Enter to go to that image.
+- **Resume.** Reopening a directory (and session) continues at the last image you were viewing (unless `n=` is in the URL).
+- **Copy status.** Copies a URL with every gallery option set explicitly (`dir`, `session`, `n`, `likes`, `filter`, `grid`, `strip`), including defaults such as `session=` (default session), `likes=all`, and `grid=true`. A short “Link copied” toast confirms it.
+- **Download.** **Download** saves the image on screen. **Download liked** saves one file, or a `.zip` when several are liked.
+- **View / Fit to width / Fullscreen.** Change how the current image is shown. `Esc` closes lightbox and fullscreen.
+
+## Where things are saved
+
+Each image directory can hold sidecar files written by `gallapp/server.py`:
+
+| File | Contents |
+|---|---|
+| `.gallapp_likes` | Liked filenames for the **default** session (one per line) |
+| `.gallapp_position` | Last viewed filename for the **default** session |
+| `.gallapp_likes_<session>` | Liked filenames for a named session (e.g. `alice`) |
+| `.gallapp_position_<session>` | Last viewed filename for that session |
+
+Example `.gallapp_likes` (or `.gallapp_likes_alice`):
+
+```text
+photo_001.jpg
+photo_042.webp
+```
+
+Those files live **inside the image folder** you opened (for example `images/my-folder/.gallapp_likes_alice`). Opening a named session creates its sidecar files if they are missing.
+
+If the custom server is not used (`python3 -m http.server` alone), the page can still browse images, but it cannot write those files. In that case likes and position fall back to **browser `localStorage`**, keyed by directory path and session. Recent directories on the start page are always stored in `localStorage` only.
+
+## Query API
+
+Open the gallery with GET parameters. Only `dir` is required to open a folder. **Copy status** always writes every parameter below, even when the value is the default.
+
+| Parameter | Meaning | Default | Example |
+|---|---|---|---|
+| `dir` | Directory path relative to the server root | — | `images/my-folder` |
+| `session` | Session name (`[A-Za-z0-9_-]`, max 40). Empty or omitted = default session. | (default session) | `session=alice` |
+| `n` | 1-based image number after filters (`image` and `i` also work). Overrides the saved position on first load. | saved position, else `1` | `n=42` |
+| `likes` | Like filter: `all`, `liked`, or `unliked` (`view` is an alias) | `all` | `likes=liked` |
+| `filter` | Filename pattern (`*` wildcard) | `*.*` | `filter=plot_*` |
+| `grid` | Show the thumbnail grid: `1`/`true` or `0`/`false` | `1` | `grid=0` |
+| `strip` | Filmstrip height in pixels, 32–240 (`strip_h` also works) | `66` | `strip=96` |
+
+Example:
+
+```text
+http://localhost:8000/gallapp/?dir=images/my-folder&session=alice&n=120&likes=unliked&filter=plot_*&grid=0&strip=90
 ```
 
 ## What it reads
@@ -68,9 +117,10 @@ If the directory contains `index.html` (or `index.htm`), Python’s server retur
 |---|---|
 | `index.html` | Page shell and the start-up instructions. |
 | `gallery.css` | Layout and gallery styling. |
-| `gallery.js` | Directory listing, likes, preview, and zip download. |
-| `server.py` | Local file server. Also writes `.gallapp_likes` and `.gallapp_position` into the image folder. |
-| `assets/logo-seap-banner.webp` | SEAP-UdeA mark shown beside Gallery App. It links to [seap-udea.github.io](https://seap-udea.github.io/). |
+| `gallery.js` | Directory listing, likes, preview, query API, and zip download. |
+| `server.py` | Local file server. Writes likes/position sidecars (default and named sessions). |
+| `assets/logo-seap-banner.webp` | SEAP-UdeA mark shown beside Gallery App. Links to [seap-udea.github.io](https://seap-udea.github.io/). |
+| `assets/favicon.*` | SEAP-UdeA favicon (same set as the SEAP site). |
 
 There is no build step. The zip is built in the browser and stores the image bytes as they are.
 

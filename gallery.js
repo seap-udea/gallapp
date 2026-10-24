@@ -2,6 +2,9 @@
   "use strict";
 
   var IMAGE_EXT = /\.(png|jpe?g|gif|webp|svg|bmp|tiff?|avif)$/i;
+  // Letters, digits, _ and - only; no spaces or other punctuation.
+  var SESSION_NAME_RE = /^[A-Za-z0-9_-]+$/;
+  var SESSION_NAME_MAX = 40;
   var RECENT_KEY = "gallapp-recent-dirs";
   var CRC_TABLE = makeCrcTable();
 
@@ -288,6 +291,8 @@
   var rootEl = document.getElementById("gallery-root");
   var statusEl = document.getElementById("gallery-status");
   var dirInput = document.getElementById("dir-input");
+  var sessionInput = document.getElementById("session-input");
+  var newSessionBtn = document.getElementById("new-session-btn");
   var dirForm = document.getElementById("dir-form");
   var introTemplate = document.getElementById("intro-template");
   var lightbox = document.getElementById("gallery-lightbox");
@@ -304,13 +309,18 @@
   var fsLike = document.getElementById("fs-like");
 
   var FILMSTRIP_RADIUS = 24;
+  var STRIP_HEIGHT_DEFAULT = 66;
   var state = {
     dir: "",
+    session: "",
     images: [],
     index: 0,
     liked: {},
     likeFilter: "all",
     nameFilter: "*.*",
+    showGrid: true,
+    stripHeight: STRIP_HEIGHT_DEFAULT,
+    startFromQuery: null,
     fitWidth: false,
     fullscreen: false,
     downloading: false,
@@ -338,8 +348,187 @@
     statusEl.hidden = !message;
   }
 
+  function queryParams() {
+    return new URLSearchParams(window.location.search);
+  }
+
   function queryDir() {
-    return new URLSearchParams(window.location.search).get("dir") || "";
+    return queryParams().get("dir") || "";
+  }
+
+  function parseLikeFilter(raw) {
+    var value = String(raw == null ? "" : raw)
+      .toLowerCase()
+      .trim()
+      .replace(/[_\s]+/g, "-");
+    if (
+      value === "liked" ||
+      value === "like" ||
+      value === "liked-only" ||
+      value === "starred"
+    ) {
+      return "liked";
+    }
+    if (
+      value === "unliked" ||
+      value === "nolike" ||
+      value === "no-like" ||
+      value === "nolike-only" ||
+      value === "no-like-only" ||
+      value === "not-liked"
+    ) {
+      return "unliked";
+    }
+    return "all";
+  }
+
+  function parseBoolParam(raw, fallback) {
+    if (raw == null || raw === "") return fallback;
+    var value = String(raw).toLowerCase().trim();
+    if (value === "0" || value === "false" || value === "no" || value === "off") {
+      return false;
+    }
+    if (value === "1" || value === "true" || value === "yes" || value === "on") {
+      return true;
+    }
+    return fallback;
+  }
+
+  function sessionNameError(raw) {
+    var value = String(raw == null ? "" : raw).trim();
+    if (!value) return "Enter a session name.";
+    if (/\s/.test(value)) return "Session names cannot contain spaces.";
+    if (value.length > SESSION_NAME_MAX) {
+      return "Session names can be at most " + SESSION_NAME_MAX + " characters.";
+    }
+    if (!SESSION_NAME_RE.test(value)) {
+      return "Session names may only use letters, digits, underscore (_), and hyphen (-).";
+    }
+    return "";
+  }
+
+  function parseSessionId(raw) {
+    var value = String(raw == null ? "" : raw).trim();
+    if (!value) return "";
+    if (!sessionNameError(value)) return value;
+    return null;
+  }
+
+  function sessionSuffix() {
+    return state.session ? "_" + state.session : "";
+  }
+
+  function likesFileName() {
+    return ".gallapp_likes" + sessionSuffix();
+  }
+
+  function positionFileName() {
+    return ".gallapp_position" + sessionSuffix();
+  }
+
+  function syncSessionInput() {
+    if (sessionInput) sessionInput.value = state.session || "";
+  }
+
+  function applyQueryOptions() {
+    var params = queryParams();
+    var filter = params.get("filter");
+    var likes = params.get("likes") || params.get("view");
+    var grid = params.get("grid");
+    var strip = params.get("strip") || params.get("strip_h");
+    var n = params.get("n") || params.get("image") || params.get("i");
+    var session = parseSessionId(params.get("session"));
+    var height;
+    var number;
+    if (session === null) {
+      state.session = "";
+      setStatus(
+        "Invalid session name. Use letters, digits, _ or - only (or omit session for the default).",
+        true
+      );
+    } else {
+      state.session = session;
+    }
+    syncSessionInput();
+    if (filter != null && String(filter).trim() !== "") {
+      state.nameFilter = String(filter);
+    }
+    if (likes != null && String(likes).trim() !== "") {
+      state.likeFilter = parseLikeFilter(likes);
+    }
+    state.showGrid = parseBoolParam(grid, true);
+    if (strip != null && String(strip).trim() !== "") {
+      height = parseInt(strip, 10);
+      if (isFinite(height) && height >= 32 && height <= 240) {
+        state.stripHeight = height;
+      }
+    }
+    if (n != null && String(n).trim() !== "") {
+      number = parseInt(n, 10);
+      if (isFinite(number) && number >= 1) state.startFromQuery = number;
+    }
+  }
+
+  function buildStatusUrl() {
+    var params = new URLSearchParams();
+    var images = visibleImages();
+    params.set("dir", state.dir || "");
+    params.set("session", state.session || "");
+    params.set("n", images.length ? String(state.index + 1) : "1");
+    params.set("likes", state.likeFilter || "all");
+    params.set("filter", state.nameFilter || "*.*");
+    params.set("grid", state.showGrid ? "true" : "false");
+    params.set("strip", String(state.stripHeight || STRIP_HEIGHT_DEFAULT));
+    return (
+      window.location.origin +
+      window.location.pathname +
+      "?" +
+      params.toString()
+    );
+  }
+
+  var toastTimer = null;
+
+  function showToast(message) {
+    var toast = document.getElementById("gallery-toast");
+    if (!toast) return;
+    toast.textContent = message;
+    toast.hidden = false;
+    toast.classList.remove("is-visible", "is-leaving");
+    // Retrigger the enter animation if Copy status is pressed again quickly.
+    void toast.offsetWidth;
+    toast.classList.add("is-visible");
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () {
+      toast.classList.remove("is-visible");
+      toast.classList.add("is-leaving");
+      toastTimer = setTimeout(function () {
+        toast.classList.remove("is-leaving");
+        toast.hidden = true;
+        toastTimer = null;
+      }, 280);
+    }, 1800);
+  }
+
+  function copyStatus() {
+    var url = buildStatusUrl();
+    function done() {
+      showToast("Link copied");
+    }
+    function fallback() {
+      window.prompt("Copy this gallery URL:", url);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(done).catch(fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function applyStripHeight() {
+    var strip = document.getElementById("gallery-filmstrip");
+    if (!strip) return;
+    strip.style.setProperty("--gallery-strip-h", state.stripHeight + "px");
   }
 
   function directoryUrl(dir) {
@@ -353,19 +542,63 @@
   }
 
   function likeStorageKey() {
-    return "gallapp-likes:" + state.dir;
+    return "gallapp-likes:" + state.dir + sessionSuffix();
   }
 
   function positionStorageKey() {
-    return "gallapp-position:" + state.dir;
+    return "gallapp-position:" + state.dir + sessionSuffix();
   }
 
   function likesFileUrl() {
-    return directoryUrl(state.dir) + ".gallapp_likes";
+    return directoryUrl(state.dir) + likesFileName();
   }
 
   function positionFileUrl() {
-    return directoryUrl(state.dir) + ".gallapp_position";
+    return directoryUrl(state.dir) + positionFileName();
+  }
+
+  function galleryUrl(dir, session) {
+    var params = new URLSearchParams();
+    params.set("dir", dir || "");
+    if (session) params.set("session", session);
+    return (
+      window.location.origin +
+      window.location.pathname +
+      "?" +
+      params.toString()
+    );
+  }
+
+  async function putSidecar(url, body) {
+    var res = await fetch(url, {
+      method: "PUT",
+      cache: "no-store",
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+      body: body == null ? "" : body,
+    });
+    return res;
+  }
+
+  async function ensureSessionSidecars() {
+    var likesRes;
+    var posRes;
+    var name;
+    if (!state.session || !state.dir) return true;
+    try {
+      likesRes = await putSidecar(likesFileUrl(), likesText());
+      if (!likesRes.ok) throw new Error(String(likesRes.status));
+      state.likesInFile = true;
+      name = currentImageName();
+      posRes = await putSidecar(positionFileUrl(), name ? name + "\n" : "");
+      if (!posRes.ok) throw new Error(String(posRes.status));
+      return true;
+    } catch (err) {
+      setStatus(
+        "Could not create session files. Start with python3 gallapp/server.py so sessions are saved in the image folder.",
+        true
+      );
+      return false;
+    }
   }
 
   function likesText() {
@@ -440,7 +673,9 @@
         if (!state.likesSaveWarned) {
           state.likesSaveWarned = true;
           setStatus(
-            "Could not write .gallapp_likes. Start with python3 gallapp/server.py so likes are saved in the image folder.",
+            "Could not write " +
+              likesFileName() +
+              ". Start with python3 gallapp/server.py so likes are saved in the image folder.",
             true
           );
         }
@@ -559,12 +794,41 @@
     return list;
   }
 
+  function nameFilteredImages() {
+    return state.images.filter(function (img) {
+      return nameMatchesFilter(img.name, state.nameFilter);
+    });
+  }
+
   function likedImages() {
     return state.images.filter(isLiked);
   }
 
   function likedCount() {
     return Object.keys(state.liked).length;
+  }
+
+  function nameFilteredLikedCount() {
+    var n = 0;
+    nameFilteredImages().forEach(function (img) {
+      if (isLiked(img)) n += 1;
+    });
+    return n;
+  }
+
+  function updateImageCountLine() {
+    var countLine = document.getElementById("gallery-image-count");
+    var total;
+    var liked;
+    if (!countLine) return;
+    total = nameFilteredImages().length;
+    liked = nameFilteredLikedCount();
+    countLine.textContent =
+      total +
+      (total === 1 ? " image" : " images") +
+      " · " +
+      liked +
+      " liked";
   }
 
   function filmstripWindow(images, index) {
@@ -581,11 +845,14 @@
       '" data-index="' +
       i +
       '" title="' +
-      escapeHtml(img.name) +
+      escapeHtml(String(i + 1) + " · " + img.name) +
       '">' +
       '<img src="' +
       escapeHtml(img.url) +
       '" alt="" loading="lazy" decoding="async">' +
+      '<span class="gallery-filmstrip-num" aria-hidden="true">' +
+      escapeHtml(String(i + 1)) +
+      "</span>" +
       "</button>"
     );
   }
@@ -692,16 +959,7 @@
       var labelEl = btn.querySelector(".gallery-like-label");
       if (labelEl) labelEl.textContent = downloadLabel(count);
     });
-    var countLine = document.getElementById("gallery-image-count");
-    if (countLine) {
-      var total = state.images.length;
-      countLine.textContent =
-        total +
-        (total === 1 ? " image" : " images") +
-        " · " +
-        count +
-        " liked";
-    }
+    updateImageCountLine();
   }
 
   function updateCurrentLikeUI() {
@@ -866,7 +1124,9 @@
     var prev;
     if (!n) return;
     prev = state.index;
-    state.index = ((next % n) + n) % n;
+    if (next < 0) next = 0;
+    if (next >= n) next = n - 1;
+    state.index = next;
     if (state.index === prev) {
       updateCounterFields(images);
       return;
@@ -1033,6 +1293,7 @@
       '<span class="gallery-like-count">0</span>' +
       "</button>" +
       '<button type="button" class="gallery-action-btn" data-action="unlike-all" disabled>Unlike all</button>' +
+      '<button type="button" class="gallery-action-btn" data-action="copy-status" title="Copy a URL that restores this gallery state">Copy status</button>' +
       "</span>"
     );
   }
@@ -1046,7 +1307,11 @@
       "</h1>" +
       '<p class="gallery-meta"><span id="gallery-image-count"></span> · <code class="gallery-path">' +
       escapeHtml(state.dir) +
-      "</code></p>" +
+      "</code>" +
+      (state.session
+        ? ' · session <code class="gallery-session">' + escapeHtml(state.session) + "</code>"
+        : " · default session") +
+      "</p>" +
       '<label class="gallery-name-filter" for="gallery-name-filter">Filter' +
       '<input id="gallery-name-filter" type="text" spellcheck="false" autocomplete="off" value="' +
       escapeHtml(state.nameFilter) +
@@ -1056,23 +1321,71 @@
     );
   }
 
+  function emptyVisibleMessage() {
+    if (!state.images.length) return "This directory has no images.";
+    var named = state.images.filter(function (img) {
+      return nameMatchesFilter(img.name, state.nameFilter);
+    });
+    if (!named.length) return "No images match " + state.nameFilter + ".";
+    if (state.likeFilter === "liked") {
+      return "No images have been liked yet. Choose All to browse and like images.";
+    }
+    if (state.likeFilter === "unliked") {
+      return "Every matching image is liked. Choose All to browse them.";
+    }
+    return "No images match " + state.nameFilter + ".";
+  }
+
+  function previewToolbarHtml() {
+    return (
+      '<div class="gallery-preview-toolbar">' +
+      '<button type="button" class="gallery-nav-btn" id="gallery-first" aria-label="First image" title="First image">«</button>' +
+      '<button type="button" class="gallery-nav-btn" id="gallery-prev" aria-label="Previous image" title="Previous image">‹</button>' +
+      '<span class="gallery-counter" id="gallery-counter">' +
+      '<input id="gallery-jump" class="gallery-jump" type="number" min="1" inputmode="numeric" aria-label="Go to image number">' +
+      '<span class="gallery-counter-sep">/</span>' +
+      '<span id="gallery-counter-total">0</span>' +
+      "</span>" +
+      '<button type="button" class="gallery-nav-btn" id="gallery-next" aria-label="Next image" title="Next image">›</button>' +
+      '<button type="button" class="gallery-nav-btn" id="gallery-last" aria-label="Last image" title="Last image">»</button>' +
+      '<span class="gallery-like-filters" role="radiogroup" aria-label="Like filter">' +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="all"' +
+      (state.likeFilter === "all" ? " checked" : "") +
+      "> All</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="liked"' +
+      (state.likeFilter === "liked" ? " checked" : "") +
+      "> Liked only</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="unliked"' +
+      (state.likeFilter === "unliked" ? " checked" : "") +
+      "> No like only</label>" +
+      "</span>" +
+      '<span class="gallery-hint">Use ← → to browse · Shift+Space to like or unlike</span>' +
+      "</div>"
+    );
+  }
+
   function renderPreview() {
     var images = visibleImages();
     var filmstrip;
+    var emptyMsg;
     if (!images.length) {
+      emptyMsg = emptyVisibleMessage();
+      if (!state.images.length) {
+        return '<p class="gallery-empty">' + escapeHtml(emptyMsg) + "</p>";
+      }
+      // Keep filters/actions so Liked only / name filter can be cleared.
       return (
+        '<section class="gallery-preview" aria-label="Image preview">' +
+        previewToolbarHtml() +
+        '<div class="gallery-preview-stage gallery-preview-stage-empty" id="gallery-preview-stage">' +
         '<p class="gallery-empty">' +
-        (function () {
-          if (!state.images.length) return "This directory has no images.";
-          var named = state.images.filter(function (img) {
-            return nameMatchesFilter(img.name, state.nameFilter);
-          });
-          if (!named.length) return "No images match " + state.nameFilter + ".";
-          if (state.likeFilter === "liked") return "No images have been liked yet.";
-          if (state.likeFilter === "unliked") return "Every matching image is liked.";
-          return "No images match " + state.nameFilter + ".";
-        })() +
-        "</p>"
+        escapeHtml(emptyMsg) +
+        "</p>" +
+        '<div class="gallery-preview-actions">' +
+        downloadLikedButtonHtml() +
+        "</div>" +
+        "</div>" +
+        "</section>"
       );
     }
     (function () {
@@ -1087,27 +1400,7 @@
     })();
     return (
       '<section class="gallery-preview" aria-label="Image preview">' +
-      '<div class="gallery-preview-toolbar">' +
-      '<button type="button" class="gallery-nav-btn" id="gallery-prev" aria-label="Previous image">‹</button>' +
-      '<span class="gallery-counter" id="gallery-counter">' +
-      '<input id="gallery-jump" class="gallery-jump" type="number" min="1" inputmode="numeric" aria-label="Go to image number">' +
-      '<span class="gallery-counter-sep">/</span>' +
-      '<span id="gallery-counter-total">0</span>' +
-      "</span>" +
-      '<button type="button" class="gallery-nav-btn" id="gallery-next" aria-label="Next image">›</button>' +
-      '<span class="gallery-like-filters" role="radiogroup" aria-label="Like filter">' +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="all"' +
-      (state.likeFilter === "all" ? " checked" : "") +
-      "> All</label>" +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="liked"' +
-      (state.likeFilter === "liked" ? " checked" : "") +
-      "> Liked only</label>" +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="unliked"' +
-      (state.likeFilter === "unliked" ? " checked" : "") +
-      "> No like only</label>" +
-      "</span>" +
-      '<span class="gallery-hint">Use ← → to browse · Shift+Space to like or unlike</span>' +
-      "</div>" +
+      previewToolbarHtml() +
       '<div class="gallery-preview-stage" id="gallery-preview-stage">' +
       '<span class="gallery-liked-mark" hidden aria-hidden="true">★</span>' +
       '<img id="gallery-preview-image" alt="" decoding="async">' +
@@ -1131,13 +1424,14 @@
   function renderGrid() {
     var images = visibleImages();
     var items;
-    if (!images.length) return "";
+    if (!state.showGrid || !images.length) return "";
     items = images
       .map(function (img, i) {
+        var liked = isLiked(img);
         return (
           '<button type="button" class="gallery-grid-item' +
           (i === state.index ? " is-active" : "") +
-          (isLiked(img) ? " is-liked" : "") +
+          (liked ? " is-liked" : "") +
           '" data-index="' +
           i +
           '" title="' +
@@ -1149,9 +1443,19 @@
           '" alt="' +
           escapeHtml(img.name) +
           '" loading="lazy" decoding="async">' +
-          '<span class="gallery-like-btn" role="button" tabindex="0" data-like-index="' +
+          '<span class="gallery-like-btn' +
+          (liked ? " is-liked" : "") +
+          '" role="button" tabindex="0" aria-pressed="' +
+          (liked ? "true" : "false") +
+          '" aria-label="' +
+          (liked ? "Unlike" : "Like") +
+          '" title="' +
+          (liked ? "Unlike" : "Like") +
+          '" data-like-index="' +
           i +
-          '">☆</span>' +
+          '">' +
+          (liked ? "★" : "☆") +
+          "</span>" +
           "</span>" +
           '<span class="gallery-grid-name">' +
           imageNameLinkHtml(img) +
@@ -1229,6 +1533,12 @@
     } else if (key === "ArrowLeft") {
       event.preventDefault();
       setIndex(state.index - 1);
+    } else if (key === "Home") {
+      event.preventDefault();
+      setIndex(0);
+    } else if (key === "End") {
+      event.preventDefault();
+      setIndex(visibleImages().length - 1);
     } else if ((key === "l" || key === "L") && !event.metaKey && !event.ctrlKey && !event.altKey) {
       event.preventDefault();
       toggleLike(state.index);
@@ -1299,6 +1609,8 @@
     if (scope === "all" || scope === "preview") {
       prevBtn = document.getElementById("gallery-prev");
       nextBtn = document.getElementById("gallery-next");
+      var firstBtn = document.getElementById("gallery-first");
+      var lastBtn = document.getElementById("gallery-last");
       likeBtn = document.getElementById("gallery-like");
       viewBtn = document.getElementById("gallery-view");
       downloadBtn = document.getElementById("gallery-download");
@@ -1309,8 +1621,17 @@
       nameFilter = document.getElementById("gallery-name-filter");
 
       bindSwipe(stage);
+      if (firstBtn) {
+        firstBtn.addEventListener("click", function () { setIndex(0); });
+      }
       if (prevBtn) prevBtn.addEventListener("click", function () { setIndex(state.index - 1); });
       if (nextBtn) nextBtn.addEventListener("click", function () { setIndex(state.index + 1); });
+      if (lastBtn) {
+        lastBtn.addEventListener("click", function () {
+          var n = visibleImages().length;
+          if (n) setIndex(n - 1);
+        });
+      }
       if (likeBtn) likeBtn.addEventListener("click", function () { toggleLike(state.index); });
       if (viewBtn) viewBtn.addEventListener("click", function () { openLightbox(state.index); });
       if (downloadBtn) {
@@ -1396,6 +1717,10 @@
         if (btn.closest("#gallery-grid-section")) return;
         btn.addEventListener("click", unlikeAll);
       });
+      document.querySelectorAll('[data-action="copy-status"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", copyStatus);
+      });
       if (strip) {
         strip.addEventListener("click", function (event) {
           var item = event.target.closest("[data-index]");
@@ -1413,6 +1738,9 @@
       });
       document.querySelectorAll("#gallery-grid-section [data-action='unlike-all']").forEach(function (btn) {
         btn.addEventListener("click", unlikeAll);
+      });
+      document.querySelectorAll("#gallery-grid-section [data-action='copy-status']").forEach(function (btn) {
+        btn.addEventListener("click", copyStatus);
       });
       grid.addEventListener("click", function (event) {
         var like = event.target.closest(".gallery-like-btn");
@@ -1453,12 +1781,14 @@
     rootEl.innerHTML = renderHeader() + renderPreview();
     document.title = basenameDir(state.dir) + " — Gallery App";
     bindView("preview");
+    applyStripHeight();
     if (images.length) {
       updatePreview();
       applyFitWidth();
       updateCurrentLikeUI();
       prefetchAround(images, state.index);
     } else {
+      updateCounterFields(images);
       updateCurrentLikeUI();
     }
     gridHtml = renderGrid();
@@ -1499,7 +1829,11 @@
     }
   }
 
-  function openDir(dir) {
+  function openDir(dir, session, options) {
+    var sid;
+    var url;
+    var win;
+    options = options || {};
     if (dir == null) {
       setStatus("The path cannot contain \"..\" or move above the server root.", true);
       return;
@@ -1508,7 +1842,126 @@
       window.location.assign(window.location.pathname);
       return;
     }
-    window.location.assign(window.location.pathname + "?dir=" + encodeURIComponent(dir));
+    sid = parseSessionId(session);
+    if (sid === null) {
+      setStatus(
+        sessionNameError(session) ||
+          "Invalid session name. Use letters, digits, _ or - only.",
+        true
+      );
+      return;
+    }
+    url = galleryUrl(dir, sid);
+    if (options.newWindow) {
+      win = window.open(url, "_blank", "noopener,noreferrer");
+      if (!win) {
+        setStatus("Could not open a new window. Allow pop-ups for this site, or open: " + url, true);
+      }
+      return;
+    }
+    window.location.assign(url);
+  }
+
+  function askSessionName() {
+    var modal = document.getElementById("session-modal");
+    var input = document.getElementById("session-modal-input");
+    var errorEl = document.getElementById("session-modal-error");
+    var confirmBtn = document.getElementById("session-modal-confirm");
+    if (!modal || !input || !confirmBtn) {
+      return Promise.resolve(null);
+    }
+    return new Promise(function (resolve) {
+      var settled = false;
+
+      function setError(message) {
+        if (!errorEl) return;
+        if (message) {
+          errorEl.textContent = message;
+          errorEl.hidden = false;
+          input.classList.add("is-invalid");
+        } else {
+          errorEl.textContent = "";
+          errorEl.hidden = true;
+          input.classList.remove("is-invalid");
+        }
+      }
+
+      function finish(value) {
+        if (settled) return;
+        settled = true;
+        modal.hidden = true;
+        document.removeEventListener("keydown", onKeydown, true);
+        modal.removeEventListener("click", onClick);
+        confirmBtn.removeEventListener("click", onConfirm);
+        input.removeEventListener("input", onInput);
+        resolve(value);
+      }
+
+      function onConfirm() {
+        var err = sessionNameError(input.value);
+        if (err) {
+          setError(err);
+          input.focus();
+          input.select();
+          return;
+        }
+        finish(String(input.value).trim());
+      }
+
+      function onClick(event) {
+        if (event.target && event.target.hasAttribute("data-session-modal-dismiss")) {
+          finish(null);
+        }
+      }
+
+      function onKeydown(event) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          finish(null);
+          return;
+        }
+        if (event.key === "Enter" && event.target === input) {
+          event.preventDefault();
+          onConfirm();
+        }
+      }
+
+      function onInput() {
+        if (errorEl && !errorEl.hidden) setError("");
+      }
+
+      setError("");
+      input.value = "";
+      modal.hidden = false;
+      modal.addEventListener("click", onClick);
+      confirmBtn.addEventListener("click", onConfirm);
+      input.addEventListener("input", onInput);
+      document.addEventListener("keydown", onKeydown, true);
+      requestAnimationFrame(function () {
+        input.focus();
+      });
+    });
+  }
+
+  async function startNewSession() {
+    var dir = normalizeDir(dirInput ? dirInput.value : "");
+    var sid;
+    if (dir == null) {
+      setStatus("The path cannot contain \"..\" or move above the server root.", true);
+      return;
+    }
+    if (!dir) {
+      setStatus("Enter a directory path before creating a session.", true);
+      if (dirInput) dirInput.focus();
+      return;
+    }
+    sid = await askSessionName();
+    if (!sid) return;
+    if (newSessionBtn) newSessionBtn.disabled = true;
+    setStatus("Opening session \"" + sid + "\" for " + dir + "…");
+    openDir(dir, sid, { newWindow: true });
+    if (newSessionBtn) newSessionBtn.disabled = false;
+    setStatus("");
   }
 
   async function loadDirectory(dir) {
@@ -1516,8 +1969,17 @@
     var res, type, html, images;
     state.dir = dir;
     if (dirInput) dirInput.value = dir;
-    setStatus("Loading images from " + dir + "…");
-    document.title = basenameDir(dir) + " — Gallery App";
+    syncSessionInput();
+    setStatus(
+      "Loading images from " +
+        dir +
+        (state.session ? " (session " + state.session + ")" : "") +
+        "…"
+    );
+    document.title =
+      basenameDir(dir) +
+      (state.session ? " · " + state.session : "") +
+      " — Gallery App";
     try {
       res = await fetch(url, { cache: "no-store" });
     } catch (err) {
@@ -1533,7 +1995,7 @@
       setStatus(
         "Could not find \"" +
           dir +
-          "\". The path is relative to the folder where you started the server (code).",
+          "\". The path is relative to the folder where you started the server.",
         true
       );
       return;
@@ -1552,10 +2014,32 @@
     state.filmstripStart = -1;
     state.filmstripEnd = -1;
     await loadLikes();
-    (function restorePosition(savedName) {
-      var idx = indexOfName(savedName, visibleImages());
-      state.index = idx >= 0 ? idx : 0;
-    })(await loadPosition());
+    invalidateVisible();
+    if (state.startFromQuery != null) {
+      (function applyStartFromQuery() {
+        var images = visibleImages();
+        var idx = state.startFromQuery - 1;
+        if (!images.length) {
+          state.index = 0;
+          return;
+        }
+        if (idx < 0) idx = 0;
+        if (idx >= images.length) idx = images.length - 1;
+        state.index = idx;
+      })();
+      state.startFromQuery = null;
+    } else {
+      (function restorePosition(savedName) {
+        var idx = indexOfName(savedName, visibleImages());
+        state.index = idx >= 0 ? idx : 0;
+      })(await loadPosition());
+    }
+    if (state.session) {
+      if (!(await ensureSessionSidecars())) {
+        showIntro();
+        return;
+      }
+    }
     rememberDir(dir);
     if (!images.length) {
       rootEl.innerHTML = renderHeader();
@@ -1569,16 +2053,25 @@
   function boot() {
     var dir;
     bindGlobals();
+    applyQueryOptions();
     if (dirForm) {
       dirForm.addEventListener("submit", function (event) {
         event.preventDefault();
-        openDir(normalizeDir(dirInput ? dirInput.value : ""));
+        openDir(
+          normalizeDir(dirInput ? dirInput.value : ""),
+          sessionInput ? sessionInput.value : state.session
+        );
+      });
+    }
+    if (newSessionBtn) {
+      newSessionBtn.addEventListener("click", function () {
+        startNewSession();
       });
     }
     if (window.location.protocol === "file:") {
       showIntro();
       setStatus(
-        "This page was opened as a file. Start the server in code and open http://localhost:8000/gallapp/.",
+        "This page was opened as a file. Start the server with python3 gallapp/server.py and open http://localhost:8000/gallapp/.",
         true
       );
       return;

@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Local gallery: view images in a directory, like them, and download them.">
   <title>Gallery App</title>
+  <link rel="icon" href="assets/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" href="assets/favicon.png" sizes="32x32">
+  <link rel="icon" type="image/webp" href="assets/favicon-32.webp" sizes="32x32">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.webp">
   <link rel="stylesheet" href="gallery.css">
 </head>
 <body class="gallery-page">
@@ -14,18 +18,56 @@
         <a class="brand-mark" href="https://seap-udea.github.io/" target="_blank" rel="noopener noreferrer">
           <img class="brand-logo" src="assets/logo-seap-banner.webp" alt="SEAP-UdeA" width="1627" height="200">
         </a>
-        <a class="brand" href="./">Gallery App</a>
+        <a class="brand" href="https://github.com/seap-udea/gallapp" target="_blank" rel="noopener noreferrer">Gallery App</a>
       </div>
       <form class="dir-form" id="dir-form" action="./" method="get">
         <label for="dir-input">Directory</label>
         <input id="dir-input" name="dir" type="text" spellcheck="false" autocomplete="off" placeholder="path/relative/to/the/directory" enterkeyhint="go">
+        <input id="session-input" name="session" type="hidden" value="">
         <button type="submit">Open</button>
+        <button type="button" class="dir-form-secondary" id="new-session-btn" title="Open this directory in a new review session">New session</button>
       </form>
     </div>
   </header>
 
   <main class="gallery-main" id="gallery-root"></main>
   <p class="gallery-status" id="gallery-status" hidden></p>
+  <div class="gallery-toast" id="gallery-toast" hidden role="status" aria-live="polite"></div>
+
+  <div class="gallery-modal" id="session-modal" hidden>
+    <div class="gallery-modal-backdrop" data-session-modal-dismiss></div>
+    <div
+      class="gallery-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="session-modal-title"
+    >
+      <h2 class="gallery-modal-title" id="session-modal-title">New session</h2>
+      <p class="gallery-modal-copy">
+        Choose a name for this review session. Letters, digits, underscore and hyphen only — no spaces.
+      </p>
+      <label class="gallery-modal-label" for="session-modal-input">Session name</label>
+      <input
+        id="session-modal-input"
+        class="gallery-modal-input"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        maxlength="40"
+        placeholder="e.g. alice or review_1"
+        enterkeyhint="go"
+      >
+      <p class="gallery-modal-error" id="session-modal-error" hidden></p>
+      <div class="gallery-modal-actions">
+        <button type="button" class="gallery-modal-btn gallery-modal-btn-secondary" data-session-modal-dismiss>
+          Cancel
+        </button>
+        <button type="button" class="gallery-modal-btn" id="session-modal-confirm">
+          Open session
+        </button>
+      </div>
+    </div>
+  </div>
 
   <div class="gallery-lightbox" id="gallery-lightbox" hidden>
     <button type="button" class="gallery-lightbox-close" id="lightbox-close" aria-label="Close">×</button>
@@ -51,7 +93,7 @@
 
   <footer class="site-footer">
     <div class="footer-bottom">
-      Developed by <a href="https://jorgezuluaga.github.io/">Jorge I. Zuluaga</a> with the assistance of AI
+      Developed by <a href="https://jorgezuluaga.github.io/" target="_blank" rel="noopener noreferrer">Jorge I. Zuluaga</a> with the assistance of AI
     </div>
   </footer>
 
@@ -60,11 +102,11 @@
       <h1>Local gallery</h1>
       <p>Browse the images in a directory, like the ones you want, and download them when you are done choosing.</p>
       <ol class="gallery-steps">
-        <li>In the <code>code</code> folder, start a server: <code>python3 gallapp/server.py</code></li>
+        <li>In the site root (the folder that contains <code>gallapp/</code>), start a server: <code>python3 gallapp/server.py</code></li>
         <li>Open <code>http://localhost:8000/gallapp/</code></li>
-        <li>Enter the directory path relative to <code>code</code>. For example <code>test_dev/paper_workshop_LSST/figs</code></li>
+        <li>Enter a directory path relative to that root. For example <code>images/my-folder</code></li>
       </ol>
-      <p>One liked image downloads as itself. Several liked images are packed into a <code>.zip</code>. Likes are written to <code>.gallapp_likes</code> in that image folder. If the directory contains an <code>index.html</code>, Python’s server shows that page and Gallery App cannot see the file list.</p>
+      <p>One liked image downloads as itself. Several liked images are packed into a <code>.zip</code>. Likes are written to <code>.gallapp_likes</code> in that image folder (or <code>.gallapp_likes_&lt;session&gt;</code> when using a session). Use <strong>New session</strong> so several people can review the same directory with separate likes. If the directory contains an <code>index.html</code>, Python’s server shows that page and Gallery App cannot see the file list.</p>
       <div id="gallery-recent"></div>
     </section>
   </template>

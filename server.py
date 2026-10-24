@@ -2,16 +2,20 @@
 """Local server for Gallery App.
 
 Serves the current directory like ``python3 -m http.server``, and also accepts
-PUT requests that write ``.gallapp_likes`` or ``.gallapp_position`` inside an
-image folder. It listens on localhost only.
+PUT requests that write ``.gallapp_likes`` / ``.gallapp_position`` (default
+session) or ``.gallapp_likes_<session>`` / ``.gallapp_position_<session>``
+(named sessions) inside an image folder. It listens on localhost only.
 """
 
 import os
+import re
 import sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
 
-WRITABLE = {".gallapp_likes", ".gallapp_position"}
+DEFAULT_WRITABLE = {".gallapp_likes", ".gallapp_position"}
+# Session names: letters, digits, underscore, hyphen (1–40 chars).
+SESSION_FILE_RE = re.compile(r"^\.gallapp_(likes|position)_([A-Za-z0-9_-]{1,40})$")
 MAX_BYTES = 1_000_000
 
 
@@ -19,12 +23,22 @@ def _valid_name(name):
     return bool(name) and name not in (".", "..") and "/" not in name and "\\" not in name and "\x00" not in name
 
 
+def _writable_base(base):
+    if base in DEFAULT_WRITABLE:
+        return True
+    return bool(SESSION_FILE_RE.match(base))
+
+
 class GalleryHandler(SimpleHTTPRequestHandler):
     def do_PUT(self):
         rel = unquote(self.path.split("?", 1)[0]).lstrip("/")
         base = os.path.basename(rel)
-        if base not in WRITABLE:
-            self.send_error(405, "Only .gallapp_likes and .gallapp_position can be written")
+        if not _writable_base(base):
+            self.send_error(
+                405,
+                "Only .gallapp_likes / .gallapp_position "
+                "(and session variants) can be written",
+            )
             return
 
         root = os.path.realpath(os.getcwd())
@@ -68,9 +82,10 @@ class GalleryHandler(SimpleHTTPRequestHandler):
                 return
             names.append(name)
 
-        if base == ".gallapp_position":
+        kind = "position" if "position" in base else "likes"
+        if kind == "position":
             if len(names) > 1:
-                self.send_error(400, ".gallapp_position accepts at most one filename")
+                self.send_error(400, "Position file accepts at most one filename")
                 return
             body = (names[0] + "\n").encode("utf-8") if names else b""
         else:
