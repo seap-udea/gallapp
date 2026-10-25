@@ -69,9 +69,61 @@
     </div>
   </div>
 
+  <div class="gallery-modal" id="class-modal" hidden>
+    <div class="gallery-modal-backdrop" data-class-modal-dismiss></div>
+    <div
+      class="gallery-modal-panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="class-modal-title"
+    >
+      <h2 class="gallery-modal-title" id="class-modal-title">Edit class label</h2>
+      <p class="gallery-modal-copy">
+        Map each class to a one-word name and a short glyph (letter or digit). After saving,
+        classify with <strong>Shift+glyph</strong> (for example Shift+c). Labels are stored in
+        <code>.gallapp_classes</code> in this directory.
+      </p>
+      <label class="gallery-modal-label" for="class-modal-slot">Class key</label>
+      <select id="class-modal-slot" class="gallery-modal-input"></select>
+      <label class="gallery-modal-label" for="class-modal-name">Class name</label>
+      <input
+        id="class-modal-name"
+        class="gallery-modal-input"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        maxlength="40"
+        placeholder="e.g. clean-fold"
+        enterkeyhint="next"
+      >
+      <label class="gallery-modal-label" for="class-modal-glyph">Glyph</label>
+      <input
+        id="class-modal-glyph"
+        class="gallery-modal-input"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        maxlength="1"
+        placeholder="e.g. c"
+        enterkeyhint="go"
+      >
+      <p class="gallery-modal-error" id="class-modal-error" hidden></p>
+      <ul class="gallery-class-def-list" id="class-modal-list" aria-label="Current class labels"></ul>
+      <div class="gallery-modal-actions">
+        <button type="button" class="gallery-modal-btn gallery-modal-btn-secondary" data-class-modal-dismiss>
+          Cancel
+        </button>
+        <button type="button" class="gallery-modal-btn" id="class-modal-confirm">
+          Save label
+        </button>
+      </div>
+    </div>
+  </div>
+
   <div class="gallery-lightbox" id="gallery-lightbox" hidden>
     <button type="button" class="gallery-lightbox-close" id="lightbox-close" aria-label="Close">×</button>
     <span class="gallery-liked-mark" hidden aria-hidden="true">★</span>
+    <span class="gallery-class-mark" hidden aria-hidden="true"></span>
     <img id="lightbox-image" alt="">
     <p class="gallery-lightbox-caption" id="lightbox-caption"></p>
   </div>
@@ -86,6 +138,7 @@
     </div>
     <div class="gallery-fs-stage">
       <span class="gallery-liked-mark" hidden aria-hidden="true">★</span>
+      <span class="gallery-class-mark" hidden aria-hidden="true"></span>
       <img class="gallery-fs-image" id="fs-image" alt="">
     </div>
     <p class="gallery-fs-caption" id="fs-caption"></p>

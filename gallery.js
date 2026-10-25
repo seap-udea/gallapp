@@ -5,6 +5,20 @@
   // Letters, digits, _ and - only; no spaces or other punctuation.
   var SESSION_NAME_RE = /^[A-Za-z0-9_-]+$/;
   var SESSION_NAME_MAX = 40;
+  var CLASS_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
+  var CLASS_GLYPH_RE = /^[A-Za-z0-9]$/;
+  var MAX_CLASS = 9;
+  var CLASS_COLORS = {
+    1: "#0969da",
+    2: "#1a7f37",
+    3: "#bf8700",
+    4: "#cf222e",
+    5: "#8250df",
+    6: "#0550ae",
+    7: "#e16f24",
+    8: "#a40e26",
+    9: "#0a3069",
+  };
   var RECENT_KEY = "gallapp-recent-dirs";
   var CRC_TABLE = makeCrcTable();
 
@@ -313,10 +327,14 @@
   var state = {
     dir: "",
     session: "",
+    multi: false,
     images: [],
     index: 0,
     liked: {},
+    classes: {},
+    classDefs: {},
     likeFilter: "all",
+    classFilter: "all",
     nameFilter: "*.*",
     showGrid: true,
     stripHeight: STRIP_HEIGHT_DEFAULT,
@@ -426,6 +444,199 @@
     return ".gallapp_position" + sessionSuffix();
   }
 
+  function multiFileName() {
+    return ".gallapp_multi" + sessionSuffix();
+  }
+
+  function classDefsFileName() {
+    return ".gallapp_classes";
+  }
+
+  function defaultClassDefs() {
+    var defs = {};
+    var i;
+    for (i = 1; i <= MAX_CLASS; i++) {
+      defs[i] = { name: "class" + i, glyph: String(i) };
+    }
+    return defs;
+  }
+
+  function ensureClassDefs() {
+    if (!state.classDefs || !Object.keys(state.classDefs).length) {
+      state.classDefs = defaultClassDefs();
+    }
+    return state.classDefs;
+  }
+
+  function classDisplayName(slot) {
+    var def = ensureClassDefs()[slot];
+    if (!def || def.name === "class" + slot) return "Class " + slot;
+    return def.name;
+  }
+
+  function classGlyph(slot) {
+    var def = ensureClassDefs()[slot];
+    return def && def.glyph ? def.glyph : String(slot);
+  }
+
+  function classDisplayWithGlyph(slot) {
+    return classDisplayName(slot) + " (" + classGlyph(slot) + ")";
+  }
+
+  function classGlyphLabel(list) {
+    return normalizeClassList(list)
+      .map(function (slot) {
+        return classGlyph(slot);
+      })
+      .join(",");
+  }
+
+  function classNameLabel(list) {
+    return normalizeClassList(list)
+      .map(function (slot) {
+        return classDisplayWithGlyph(slot);
+      })
+      .join(", ");
+  }
+
+  function parseClassFilter(raw) {
+    var value = String(raw == null ? "" : raw)
+      .toLowerCase()
+      .trim();
+    var n;
+    if (!value || value === "all") return "all";
+    if (
+      value === "none" ||
+      value === "no" ||
+      value === "noclass" ||
+      value === "no-class" ||
+      value === "unclassified"
+    ) {
+      return "none";
+    }
+    n = parseInt(value.replace(/^class-?/, ""), 10);
+    if (isFinite(n) && n >= 1 && n <= MAX_CLASS) return String(n);
+    return "all";
+  }
+
+  function normalizeClassList(value) {
+    var list = [];
+    var seen = {};
+    function add(raw) {
+      var n = parseInt(raw, 10);
+      if (!isFinite(n) || n < 1 || n > MAX_CLASS || seen[n]) return;
+      seen[n] = true;
+      list.push(n);
+    }
+    if (Array.isArray(value)) {
+      value.forEach(add);
+    } else if (typeof value === "number" || typeof value === "string") {
+      String(value)
+        .split(/[,\s+]+/)
+        .forEach(add);
+    }
+    list.sort(function (a, b) {
+      return a - b;
+    });
+    return list;
+  }
+
+  function classesOf(img) {
+    if (!img) return [];
+    return normalizeClassList(state.classes[img.name]);
+  }
+
+  function classOf(img) {
+    var list = classesOf(img);
+    return list.length ? list[0] : 0;
+  }
+
+  function classLabel(list) {
+    // Badge / compact mark: glyphs (letter or digit per class).
+    return classGlyphLabel(list);
+  }
+
+  function classColor(n) {
+    return CLASS_COLORS[n] || "";
+  }
+
+  function classDefsFileUrl() {
+    return directoryUrl(state.dir) + classDefsFileName();
+  }
+
+  function classDefsText() {
+    var lines = [];
+    var i;
+    var def;
+    ensureClassDefs();
+    for (i = 1; i <= MAX_CLASS; i++) {
+      def = state.classDefs[i];
+      if (!def) continue;
+      if (def.name === "class" + i && def.glyph === String(i)) continue;
+      lines.push(i + "\t" + def.name + "\t" + def.glyph);
+    }
+    return lines.length ? lines.join("\n") + "\n" : "";
+  }
+
+  function applyClassDefsText(text) {
+    var defs = defaultClassDefs();
+    String(text || "")
+      .split(/\r?\n/)
+      .forEach(function (line) {
+        var raw = line.trim();
+        var parts;
+        var slot;
+        var name;
+        var glyph;
+        if (!raw || raw.charAt(0) === "#") return;
+        parts = raw.split("\t");
+        if (parts.length < 3) return;
+        slot = parseInt(parts[0], 10);
+        name = String(parts[1] || "").trim();
+        glyph = String(parts[2] || "").trim();
+        if (!isFinite(slot) || slot < 1 || slot > MAX_CLASS) return;
+        if (!CLASS_NAME_RE.test(name) || !CLASS_GLYPH_RE.test(glyph)) return;
+        defs[slot] = { name: name, glyph: glyph };
+      });
+    state.classDefs = defs;
+  }
+
+  async function loadClassDefs() {
+    state.classDefs = defaultClassDefs();
+    if (!state.dir) return;
+    try {
+      var res = await fetch(classDefsFileUrl(), { cache: "no-store" });
+      if (res.ok) {
+        applyClassDefsText(await res.text());
+        return;
+      }
+    } catch (err) {}
+  }
+
+  async function saveClassDefs() {
+    var body = classDefsText();
+    var dir = state.dir;
+    var url = classDefsFileUrl();
+    if (!dir) return false;
+    try {
+      var res = await putSidecar(url, body);
+      if (!res.ok) throw new Error(String(res.status));
+      return true;
+    } catch (err) {
+      setStatus(
+        "Could not write " +
+          classDefsFileName() +
+          ". Start with python3 gallapp/server.py so class labels are saved in the image folder.",
+        true
+      );
+      return false;
+    }
+  }
+
+  function hasClass(img, klass) {
+    return classesOf(img).indexOf(klass) !== -1;
+  }
+
   function syncSessionInput() {
     if (sessionInput) sessionInput.value = state.session || "";
   }
@@ -434,12 +645,14 @@
     var params = queryParams();
     var filter = params.get("filter");
     var likes = params.get("likes") || params.get("view");
+    var classParam = params.get("class");
     var grid = params.get("grid");
     var strip = params.get("strip") || params.get("strip_h");
     var n = params.get("n") || params.get("image") || params.get("i");
     var session = parseSessionId(params.get("session"));
     var height;
     var number;
+    state.multi = parseBoolParam(params.get("multi"), false);
     if (session === null) {
       state.session = "";
       setStatus(
@@ -453,7 +666,14 @@
     if (filter != null && String(filter).trim() !== "") {
       state.nameFilter = String(filter);
     }
-    if (likes != null && String(likes).trim() !== "") {
+    if (state.multi) {
+      if (classParam != null && String(classParam).trim() !== "") {
+        state.classFilter = parseClassFilter(classParam);
+      } else if (likes != null && String(likes).trim() !== "") {
+        // Accept likes= as a soft alias when opening old links in multi mode.
+        state.classFilter = parseClassFilter(likes);
+      }
+    } else if (likes != null && String(likes).trim() !== "") {
       state.likeFilter = parseLikeFilter(likes);
     }
     state.showGrid = parseBoolParam(grid, true);
@@ -469,21 +689,68 @@
     }
   }
 
-  function buildStatusUrl() {
+  function buildStatusParams(options) {
     var params = new URLSearchParams();
     var images = visibleImages();
+    var multi = options && options.multi != null ? !!options.multi : !!state.multi;
     params.set("dir", state.dir || "");
     params.set("session", state.session || "");
+    params.set("multi", multi ? "true" : "false");
     params.set("n", images.length ? String(state.index + 1) : "1");
-    params.set("likes", state.likeFilter || "all");
+    if (multi) {
+      params.set("class", state.multi ? state.classFilter || "all" : "all");
+      params.set("likes", "all");
+    } else {
+      params.set("class", "all");
+      params.set("likes", state.multi ? "all" : state.likeFilter || "all");
+    }
     params.set("filter", state.nameFilter || "*.*");
     params.set("grid", state.showGrid ? "true" : "false");
     params.set("strip", String(state.stripHeight || STRIP_HEIGHT_DEFAULT));
+    return params;
+  }
+
+  function buildStatusUrl() {
     return (
       window.location.origin +
       window.location.pathname +
       "?" +
-      params.toString()
+      buildStatusParams().toString()
+    );
+  }
+
+  function syncUrlState() {
+    var url;
+    if (!state.dir || window.location.protocol === "file:") return;
+    try {
+      url = buildStatusUrl();
+      if (url !== window.location.href) {
+        window.history.replaceState(null, "", url);
+      }
+    } catch (err) {}
+  }
+
+  function modeSwitchUrl(wantMulti) {
+    return (
+      window.location.origin +
+      window.location.pathname +
+      "?" +
+      buildStatusParams({ multi: wantMulti }).toString()
+    );
+  }
+
+  function modeSwitchHtml() {
+    if (state.multi) {
+      return (
+        ' · <a class="gallery-mode-link" href="' +
+        escapeHtml(modeSwitchUrl(false)) +
+        '" title="Switch to like mode">Like mode</a>'
+      );
+    }
+    return (
+      ' · <a class="gallery-mode-link" href="' +
+      escapeHtml(modeSwitchUrl(true)) +
+      '" title="Classify images into classes 1–9">Multi classification</a>'
     );
   }
 
@@ -557,10 +824,19 @@
     return directoryUrl(state.dir) + positionFileName();
   }
 
+  function multiFileUrl() {
+    return directoryUrl(state.dir) + multiFileName();
+  }
+
+  function multiStorageKey() {
+    return "gallapp-multi:" + state.dir + sessionSuffix();
+  }
+
   function galleryUrl(dir, session) {
     var params = new URLSearchParams();
     params.set("dir", dir || "");
     if (session) params.set("session", session);
+    if (state.multi) params.set("multi", "true");
     return (
       window.location.origin +
       window.location.pathname +
@@ -581,13 +857,20 @@
 
   async function ensureSessionSidecars() {
     var likesRes;
+    var multiRes;
     var posRes;
     var name;
     if (!state.session || !state.dir) return true;
     try {
-      likesRes = await putSidecar(likesFileUrl(), likesText());
-      if (!likesRes.ok) throw new Error(String(likesRes.status));
-      state.likesInFile = true;
+      if (state.multi) {
+        multiRes = await putSidecar(multiFileUrl(), multiText());
+        if (!multiRes.ok) throw new Error(String(multiRes.status));
+        state.multiInFile = true;
+      } else {
+        likesRes = await putSidecar(likesFileUrl(), likesText());
+        if (!likesRes.ok) throw new Error(String(likesRes.status));
+        state.likesInFile = true;
+      }
       name = currentImageName();
       posRes = await putSidecar(positionFileUrl(), name ? name + "\n" : "");
       if (!posRes.ok) throw new Error(String(posRes.status));
@@ -682,6 +965,107 @@
       });
   }
 
+  function multiText() {
+    var names = Object.keys(state.classes).sort(function (a, b) {
+      return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
+    });
+    var lines = [];
+    names.forEach(function (name) {
+      var list = normalizeClassList(state.classes[name]);
+      if (!list.length) return;
+      lines.push(name + "\t" + list.join(","));
+    });
+    return lines.length ? lines.join("\n") + "\n" : "";
+  }
+
+  function applyMultiText(text) {
+    state.classes = {};
+    String(text || "")
+      .split(/\r?\n/)
+      .forEach(function (line) {
+        var raw = line.trim();
+        var parts;
+        var name;
+        var list;
+        var existing;
+        if (!raw || raw.charAt(0) === "#") return;
+        if (raw.indexOf("\t") === -1) return;
+        parts = raw.split("\t");
+        name = parts[0].trim();
+        if (!name) return;
+        list = normalizeClassList(parts.slice(1).join("\t"));
+        if (!list.length) return;
+        existing = state.classes[name] ? state.classes[name].slice() : [];
+        state.classes[name] = normalizeClassList(existing.concat(list));
+      });
+  }
+
+  function loadMultiFromStorage() {
+    state.classes = {};
+    try {
+      var map = JSON.parse(window.localStorage.getItem(multiStorageKey()) || "{}");
+      if (map && typeof map === "object") {
+        Object.keys(map).forEach(function (name) {
+          var list = normalizeClassList(map[name]);
+          if (list.length) state.classes[name] = list;
+        });
+      }
+    } catch (err) {}
+  }
+
+  function saveMultiToStorage() {
+    try {
+      window.localStorage.setItem(multiStorageKey(), JSON.stringify(state.classes));
+    } catch (err) {}
+  }
+
+  async function loadMulti() {
+    state.classes = {};
+    state.multiInFile = false;
+    try {
+      var res = await fetch(multiFileUrl(), { cache: "no-store" });
+      if (res.ok) {
+        applyMultiText(await res.text());
+        state.multiInFile = true;
+        return;
+      }
+    } catch (err) {}
+    loadMultiFromStorage();
+  }
+
+  function saveMulti() {
+    var body = multiText();
+    var dir = state.dir;
+    var url = multiFileUrl();
+    state.multiSave = Promise.resolve(state.multiSave)
+      .catch(function () {})
+      .then(function () {
+        if (dir !== state.dir) return;
+        return fetch(url, {
+          method: "PUT",
+          cache: "no-store",
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: body,
+        }).then(function (res) {
+          if (!res.ok) throw new Error(String(res.status));
+          state.multiInFile = true;
+        });
+      })
+      .catch(function () {
+        if (dir !== state.dir) return;
+        saveMultiToStorage();
+        if (!state.multiSaveWarned) {
+          state.multiSaveWarned = true;
+          setStatus(
+            "Could not write " +
+              multiFileName() +
+              ". Start with python3 gallapp/server.py so classifications are saved in the image folder.",
+            true
+          );
+        }
+      });
+  }
+
   function currentImageName() {
     var img = visibleImages()[state.index];
     return img ? img.name : "";
@@ -723,6 +1107,7 @@
     var name = currentImageName();
     var dir = state.dir;
     var url = positionFileUrl();
+    syncUrlState();
     if (!name || !dir) return;
     try {
       window.localStorage.setItem(positionStorageKey(), name);
@@ -751,6 +1136,14 @@
     }, 250);
   }
 
+  function flushPositionSave() {
+    if (positionSaveTimer) {
+      clearTimeout(positionSaveTimer);
+      positionSaveTimer = null;
+    }
+    savePositionNow();
+  }
+
   function loadRecent() {
     try {
       var list = JSON.parse(window.localStorage.getItem(RECENT_KEY) || "[]");
@@ -775,6 +1168,10 @@
     return !!(img && state.liked[img.name]);
   }
 
+  function isClassified(img) {
+    return classesOf(img).length > 0;
+  }
+
   function invalidateVisible() {
     state.visibleCache = null;
   }
@@ -784,8 +1181,19 @@
     var list = state.images.filter(function (img) {
       return nameMatchesFilter(img.name, state.nameFilter);
     });
-    if (state.likeFilter === "liked") list = list.filter(isLiked);
-    else if (state.likeFilter === "unliked") {
+    if (state.multi) {
+      if (state.classFilter === "none") {
+        list = list.filter(function (img) {
+          return !isClassified(img);
+        });
+      } else if (state.classFilter !== "all") {
+        list = list.filter(function (img) {
+          return hasClass(img, parseInt(state.classFilter, 10));
+        });
+      }
+    } else if (state.likeFilter === "liked") {
+      list = list.filter(isLiked);
+    } else if (state.likeFilter === "unliked") {
       list = list.filter(function (img) {
         return !isLiked(img);
       });
@@ -804,8 +1212,22 @@
     return state.images.filter(isLiked);
   }
 
+  function classifiedImages() {
+    var list = nameFilteredImages().filter(isClassified);
+    if (state.classFilter !== "all" && state.classFilter !== "none") {
+      list = list.filter(function (img) {
+        return hasClass(img, parseInt(state.classFilter, 10));
+      });
+    }
+    return list;
+  }
+
   function likedCount() {
     return Object.keys(state.liked).length;
+  }
+
+  function classifiedCount() {
+    return Object.keys(state.classes).length;
   }
 
   function nameFilteredLikedCount() {
@@ -816,19 +1238,27 @@
     return n;
   }
 
+  function nameFilteredClassifiedCount() {
+    var n = 0;
+    nameFilteredImages().forEach(function (img) {
+      if (isClassified(img)) n += 1;
+    });
+    return n;
+  }
+
   function updateImageCountLine() {
     var countLine = document.getElementById("gallery-image-count");
     var total;
-    var liked;
+    var marked;
     if (!countLine) return;
     total = nameFilteredImages().length;
-    liked = nameFilteredLikedCount();
+    marked = state.multi ? nameFilteredClassifiedCount() : nameFilteredLikedCount();
     countLine.textContent =
       total +
       (total === 1 ? " image" : " images") +
       " · " +
-      liked +
-      " liked";
+      marked +
+      (state.multi ? " classified" : " liked");
   }
 
   function filmstripWindow(images, index) {
@@ -838,14 +1268,33 @@
   }
 
   function filmstripItemHtml(img, i, activeIndex) {
+    var classList = state.multi ? classesOf(img) : [];
+    var klass = classList.length ? classList[0] : 0;
+    var label = classLabel(classList);
+    var liked = !state.multi && isLiked(img);
     return (
       '<button type="button" class="gallery-filmstrip-item' +
       (i === activeIndex ? " is-active" : "") +
-      (isLiked(img) ? " is-liked" : "") +
-      '" data-index="' +
+      (liked ? " is-liked" : "") +
+      (klass ? " is-classified" : "") +
+      (classList.length > 1 ? " is-multiclass" : "") +
+      '"' +
+      (klass
+        ? ' data-class="' +
+          escapeHtml(label) +
+          '" style="--class-color:' +
+          classColor(klass) +
+          '"'
+        : "") +
+      ' data-index="' +
       i +
       '" title="' +
-      escapeHtml(String(i + 1) + " · " + img.name) +
+      escapeHtml(
+        String(i + 1) +
+          " · " +
+          img.name +
+          (classList.length ? " · " + classNameLabel(classList) + " [" + label + "]" : "")
+      ) +
       '">' +
       '<img src="' +
       escapeHtml(img.url) +
@@ -926,6 +1375,9 @@
     if (!el) return;
     var label = on ? "Unlike" : "Like";
     el.classList.toggle("is-liked", on);
+    el.classList.remove("is-classified");
+    el.style.removeProperty("--class-color");
+    el.removeAttribute("data-class");
     el.setAttribute("aria-pressed", on ? "true" : "false");
     el.setAttribute("title", label);
     if (withLabel) {
@@ -936,40 +1388,143 @@
     }
   }
 
+  function setClassButton(el, list, withLabel) {
+    var classes = normalizeClassList(list);
+    var primary = classes.length ? classes[0] : 0;
+    var glyphs = classGlyphLabel(classes);
+    var names = classNameLabel(classes);
+    var color = classColor(primary);
+    if (!el) return;
+    el.classList.toggle("is-classified", !!classes.length);
+    el.classList.toggle("is-multiclass", classes.length > 1);
+    el.classList.remove("is-liked");
+    if (classes.length) {
+      el.setAttribute("data-class", glyphs);
+      el.style.setProperty("--class-color", color);
+      el.setAttribute("aria-pressed", "true");
+      el.setAttribute(
+        "title",
+        names +
+          " [" +
+          glyphs +
+          "] (" +
+          classShortcutsHint() +
+          " · Shift+0 clears all)"
+      );
+      if (withLabel) {
+        el.textContent = names;
+      } else {
+        el.setAttribute("aria-label", names);
+        el.textContent = glyphs;
+      }
+    } else {
+      el.removeAttribute("data-class");
+      el.style.removeProperty("--class-color");
+      el.setAttribute("aria-pressed", "false");
+      el.setAttribute("title", "No class — " + classShortcutsHint() + " · Shift+0 clears");
+      if (withLabel) el.textContent = "No class";
+      else {
+        el.setAttribute("aria-label", "No class");
+        el.textContent = "·";
+      }
+    }
+  }
+
   function downloadLabel(count) {
     if (state.downloading) return state.progress || "Preparing…";
+    if (state.multi) {
+      if (count > 1) return "Download classified (.zip)";
+      return "Download classified";
+    }
     if (count > 1) return "Download liked (.zip)";
     return "Download liked";
   }
 
   function updateLikedActions(count) {
-    document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
+    document.querySelectorAll('[data-action="unlike-all"], [data-action="remove-classification"]').forEach(function (btn) {
       btn.disabled = count === 0;
-      btn.title = count ? "Remove every like in this directory" : "No liked images";
+      btn.title = state.multi
+        ? count
+          ? "Clear every classification in this session"
+          : "No classified images"
+        : count
+          ? "Remove every like in this directory"
+          : "No liked images";
     });
-    document.querySelectorAll('[data-action="download-liked"]').forEach(function (btn) {
-      btn.disabled = count === 0 || state.downloading;
-      btn.title = count
-        ? count === 1
-          ? "Download the liked image"
-          : "Download the " + count + " liked images as a .zip"
-        : "Like an image first";
-      var countEl = btn.querySelector(".gallery-like-count");
-      if (countEl) countEl.textContent = String(count);
-      var labelEl = btn.querySelector(".gallery-like-label");
-      if (labelEl) labelEl.textContent = downloadLabel(count);
-    });
+    document
+      .querySelectorAll('[data-action="download-liked"], [data-action="download-classified"]')
+      .forEach(function (btn) {
+        btn.disabled = count === 0 || state.downloading;
+        btn.title = state.multi
+          ? count
+            ? count === 1
+              ? "Download the classified image"
+              : "Download the " + count + " classified images as a .zip"
+            : "Classify an image first"
+          : count
+            ? count === 1
+              ? "Download the liked image"
+              : "Download the " + count + " liked images as a .zip"
+            : "Like an image first";
+        var countEl = btn.querySelector(".gallery-like-count");
+        if (countEl) countEl.textContent = String(count);
+        var labelEl = btn.querySelector(".gallery-like-label");
+        if (labelEl) labelEl.textContent = downloadLabel(count);
+      });
     updateImageCountLine();
   }
 
   function updateCurrentLikeUI() {
     var images = visibleImages();
     var current = images[state.index];
-    var on = isLiked(current);
+    var klass;
+    var on;
+    if (state.multi) {
+      (function updateMultiMarks() {
+        var list = classesOf(current);
+        var primary = list.length ? list[0] : 0;
+        var glyphs = classGlyphLabel(list);
+        var names = classNameLabel(list);
+        setClassButton(document.getElementById("gallery-like"), list, true);
+        setClassButton(fsLike, list, false);
+        document.querySelectorAll(".gallery-liked-mark, .gallery-class-mark").forEach(function (el) {
+          if (el.classList.contains("gallery-class-mark")) {
+            if (list.length) {
+              el.hidden = false;
+              el.textContent = glyphs;
+              el.title = names;
+              el.classList.toggle("is-multiclass", list.length > 1);
+              el.style.setProperty("--class-color", classColor(primary));
+              el.setAttribute("data-class", glyphs);
+            } else {
+              el.hidden = true;
+              el.textContent = "";
+              el.removeAttribute("title");
+              el.classList.remove("is-multiclass");
+              el.removeAttribute("data-class");
+              el.style.removeProperty("--class-color");
+            }
+          } else {
+            el.hidden = true;
+          }
+        });
+        placeLikedMarks();
+        updateLikedActions(
+          state.classFilter !== "all" && state.classFilter !== "none"
+            ? classifiedImages().length
+            : classifiedCount()
+        );
+      })();
+      return;
+    }
+    on = isLiked(current);
     setLikeButton(document.getElementById("gallery-like"), on, true);
     setLikeButton(fsLike, on, false);
     document.querySelectorAll(".gallery-liked-mark").forEach(function (el) {
       el.hidden = !on;
+    });
+    document.querySelectorAll(".gallery-class-mark").forEach(function (el) {
+      el.hidden = true;
     });
     placeLikedMarks();
     updateLikedActions(likedCount());
@@ -978,18 +1533,59 @@
   function updateItemLikeUI(index) {
     var images = visibleImages();
     var img = images[index];
-    var on = isLiked(img);
+    var klass;
+    var on;
     var gridItem = document.querySelector(
       '#gallery-grid .gallery-grid-item[data-index="' + index + '"]'
     );
     var stripItem = document.querySelector(
       '#gallery-filmstrip .gallery-filmstrip-item[data-index="' + index + '"]'
     );
+    var badge;
+    if (state.multi) {
+      (function updateMultiItem() {
+        var list = classesOf(img);
+        var primary = list.length ? list[0] : 0;
+        var label = classLabel(list);
+        if (gridItem) {
+          gridItem.classList.toggle("is-classified", !!list.length);
+          gridItem.classList.toggle("is-multiclass", list.length > 1);
+          gridItem.classList.remove("is-liked");
+          if (list.length) {
+            gridItem.setAttribute("data-class", label);
+            gridItem.style.setProperty("--class-color", classColor(primary));
+          } else {
+            gridItem.removeAttribute("data-class");
+            gridItem.style.removeProperty("--class-color");
+          }
+          badge = gridItem.querySelector(".gallery-like-btn, .gallery-class-btn");
+          setClassButton(badge, list, false);
+        }
+        if (stripItem) {
+          stripItem.classList.toggle("is-classified", !!list.length);
+          stripItem.classList.toggle("is-multiclass", list.length > 1);
+          stripItem.classList.remove("is-liked");
+          if (list.length) {
+            stripItem.setAttribute("data-class", label);
+            stripItem.style.setProperty("--class-color", classColor(primary));
+          } else {
+            stripItem.removeAttribute("data-class");
+            stripItem.style.removeProperty("--class-color");
+          }
+        }
+      })();
+      return;
+    }
+    on = isLiked(img);
     if (gridItem) {
       gridItem.classList.toggle("is-liked", on);
+      gridItem.classList.remove("is-classified");
       setLikeButton(gridItem.querySelector(".gallery-like-btn"), on, false);
     }
-    if (stripItem) stripItem.classList.toggle("is-liked", on);
+    if (stripItem) {
+      stripItem.classList.toggle("is-liked", on);
+      stripItem.classList.remove("is-classified");
+    }
   }
 
   function updateLikeUI() {
@@ -1018,11 +1614,11 @@
 
   function zipFileName() {
     var base = basenameDir(state.dir) || "images";
-    return base.replace(/[^\w.-]+/g, "_") + "-liked.zip";
+    var suffix = state.multi ? "-classified" : "-liked";
+    return base.replace(/[^\w.-]+/g, "_") + suffix + ".zip";
   }
 
-  async function downloadLiked() {
-    var list = likedImages();
+  async function downloadSelection(list) {
     var entries = [];
     var i, res, bytes, zip, blob, url;
     if (!list.length || state.downloading) return;
@@ -1058,6 +1654,14 @@
     }
   }
 
+  async function downloadLiked() {
+    await downloadSelection(likedImages());
+  }
+
+  async function downloadClassified() {
+    await downloadSelection(classifiedImages());
+  }
+
   function unlikeAll() {
     if (!likedCount()) return;
     state.liked = {};
@@ -1067,18 +1671,26 @@
     render();
   }
 
+  function removeAllClassifications() {
+    if (!classifiedCount()) return;
+    state.classes = {};
+    saveMulti();
+    invalidateVisible();
+    state.index = 0;
+    render();
+  }
+
   function likeFilterActive() {
     return state.likeFilter === "liked" || state.likeFilter === "unliked";
   }
 
-  function toggleLike(index) {
-    var img = visibleImages()[index];
+  function classFilterActive() {
+    return state.classFilter !== "all";
+  }
+
+  function afterMarkChange(index) {
     var next;
-    if (!img) return;
-    if (state.liked[img.name]) delete state.liked[img.name];
-    else state.liked[img.name] = true;
-    saveLikes();
-    if (likeFilterActive()) {
+    if ((state.multi && classFilterActive()) || (!state.multi && likeFilterActive())) {
       invalidateVisible();
       next = visibleImages();
       if (!next.length) state.index = 0;
@@ -1090,6 +1702,106 @@
     updateCurrentLikeUI();
     updateItemLikeUI(index);
     savePosition();
+  }
+
+  function toggleLike(index) {
+    var img = visibleImages()[index];
+    if (!img) return;
+    if (state.multi) {
+      clearClass(index);
+      return;
+    }
+    if (state.liked[img.name]) delete state.liked[img.name];
+    else state.liked[img.name] = true;
+    saveLikes();
+    afterMarkChange(index);
+  }
+
+  function assignClass(index, klass) {
+    var img = visibleImages()[index];
+    var list;
+    var pos;
+    if (!img || !state.multi) return;
+    if (!klass || klass < 1 || klass > MAX_CLASS) return;
+    list = classesOf(img).slice();
+    pos = list.indexOf(klass);
+    if (pos >= 0) list.splice(pos, 1);
+    else list.push(klass);
+    list = normalizeClassList(list);
+    if (list.length) state.classes[img.name] = list;
+    else delete state.classes[img.name];
+    saveMulti();
+    afterMarkChange(index);
+  }
+
+  function clearClass(index) {
+    var img = visibleImages()[index];
+    if (!img || !state.multi) return;
+    if (!classesOf(img).length) return;
+    delete state.classes[img.name];
+    saveMulti();
+    afterMarkChange(index);
+  }
+
+  function pressedGlyphFromEvent(event) {
+    var code = event.code || "";
+    var key = event.key || "";
+    var digit;
+    var letter;
+    digit = /^Digit([0-9])$/.exec(code);
+    if (digit) return digit[1];
+    letter = /^Key([A-Z])$/.exec(code);
+    if (letter) return letter[1].toLowerCase();
+    if (key.length === 1 && /[A-Za-z0-9]/.test(key)) return key.toLowerCase();
+    return "";
+  }
+
+  function slotFromGlyphEvent(event) {
+    var pressed = pressedGlyphFromEvent(event);
+    var i;
+    var glyph;
+    if (!pressed || pressed === "0") return 0;
+    ensureClassDefs();
+    for (i = 1; i <= MAX_CLASS; i++) {
+      glyph = String(classGlyph(i) || "").toLowerCase();
+      if (glyph === pressed) return i;
+    }
+    return 0;
+  }
+
+  function isClearClassShortcut(event) {
+    return (
+      event.code === "Digit0" ||
+      event.key === "0" ||
+      event.key === ")"
+    );
+  }
+
+  function classShortcutHint(slot) {
+    return "Shift+" + classGlyph(slot);
+  }
+
+  function classShortcutsHint() {
+    var parts = [];
+    var i;
+    ensureClassDefs();
+    for (i = 1; i <= MAX_CLASS; i++) {
+      parts.push(classShortcutHint(i) + "=" + classDisplayName(i));
+    }
+    return parts.join(" · ");
+  }
+
+  function glyphConflict(slot, glyph) {
+    var i;
+    var g = String(glyph || "").toLowerCase();
+    ensureClassDefs();
+    for (i = 1; i <= MAX_CLASS; i++) {
+      if (i === slot) continue;
+      if (String(classGlyph(i) || "").toLowerCase() === g) {
+        return "Glyph \"" + glyph + "\" is already used by " + classDisplayName(i) + ".";
+      }
+    }
+    return "";
   }
 
   function jumpToNumber(raw) {
@@ -1142,8 +1854,11 @@
   function placeLikedMarks() {
     var pairs = [
       ["#gallery-preview-stage .gallery-liked-mark", "gallery-preview-image"],
+      ["#gallery-preview-stage .gallery-class-mark", "gallery-preview-image"],
       ["#gallery-lightbox .gallery-liked-mark", "lightbox-image"],
+      ["#gallery-lightbox .gallery-class-mark", "lightbox-image"],
       ["#gallery-fullscreen .gallery-liked-mark", "fs-image"],
+      ["#gallery-fullscreen .gallery-class-mark", "fs-image"],
     ];
     pairs.forEach(function (pair) {
       var mark = document.querySelector(pair[0]);
@@ -1286,6 +2001,18 @@
   }
 
   function downloadLikedButtonHtml() {
+    if (state.multi) {
+      return (
+        '<span class="gallery-liked-actions">' +
+        '<button type="button" class="gallery-action-btn gallery-get-liked gallery-get-classified" data-action="download-classified" disabled>' +
+        '<span class="gallery-like-label">Download classified</span> ' +
+        '<span class="gallery-like-count">0</span>' +
+        "</button>" +
+        '<button type="button" class="gallery-action-btn" data-action="remove-classification" disabled>Remove classification</button>' +
+        '<button type="button" class="gallery-action-btn" data-action="copy-status" title="Copy a URL that restores this gallery state">Copy status</button>' +
+        "</span>"
+      );
+    }
     return (
       '<span class="gallery-liked-actions">' +
       '<button type="button" class="gallery-action-btn gallery-get-liked" data-action="download-liked" disabled>' +
@@ -1311,6 +2038,8 @@
       (state.session
         ? ' · session <code class="gallery-session">' + escapeHtml(state.session) + "</code>"
         : " · default session") +
+      (state.multi ? ' · <span class="gallery-mode-multi">multi class</span>' : "") +
+      modeSwitchHtml() +
       "</p>" +
       '<label class="gallery-name-filter" for="gallery-name-filter">Filter' +
       '<input id="gallery-name-filter" type="text" spellcheck="false" autocomplete="off" value="' +
@@ -1327,6 +2056,19 @@
       return nameMatchesFilter(img.name, state.nameFilter);
     });
     if (!named.length) return "No images match " + state.nameFilter + ".";
+    if (state.multi) {
+      if (state.classFilter === "none") {
+        return "Every matching image is classified. Choose All to browse them.";
+      }
+      if (state.classFilter !== "all") {
+        return (
+          "No images in class " +
+          state.classFilter +
+          ". Choose All to browse and classify with Shift+<glyph>."
+        );
+      }
+      return "No images match " + state.nameFilter + ".";
+    }
     if (state.likeFilter === "liked") {
       return "No images have been liked yet. Choose All to browse and like images.";
     }
@@ -1334,6 +2076,53 @@
       return "Every matching image is liked. Choose All to browse them.";
     }
     return "No images match " + state.nameFilter + ".";
+  }
+
+  function filterRadiosHtml() {
+    var html;
+    var i;
+    if (state.multi) {
+      html =
+        '<span class="gallery-like-filters gallery-class-filters" role="radiogroup" aria-label="Class filter">' +
+        '<label class="gallery-filter"><input type="radio" name="gallery-class-filter" value="all"' +
+        (state.classFilter === "all" ? " checked" : "") +
+        "> All</label>" +
+        '<label class="gallery-filter"><input type="radio" name="gallery-class-filter" value="none"' +
+        (state.classFilter === "none" ? " checked" : "") +
+        "> No class</label>";
+      for (i = 1; i <= MAX_CLASS; i++) {
+        html +=
+          '<label class="gallery-filter gallery-filter-class" style="--class-color:' +
+          classColor(i) +
+          '" title="' +
+          escapeHtml(classShortcutHint(i)) +
+          " · " +
+          escapeHtml(classDisplayWithGlyph(i)) +
+          '"><input type="radio" name="gallery-class-filter" value="' +
+          i +
+          '"' +
+          (state.classFilter === String(i) ? " checked" : "") +
+          "> " +
+          escapeHtml(classDisplayWithGlyph(i)) +
+          "</label>";
+      }
+      html +=
+        '<button type="button" class="gallery-action-btn gallery-edit-classes" id="gallery-edit-classes" title="Edit class names and glyphs">Edit classes</button>';
+      return html + "</span>";
+    }
+    return (
+      '<span class="gallery-like-filters" role="radiogroup" aria-label="Like filter">' +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="all"' +
+      (state.likeFilter === "all" ? " checked" : "") +
+      "> All</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="liked"' +
+      (state.likeFilter === "liked" ? " checked" : "") +
+      "> Liked only</label>" +
+      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="unliked"' +
+      (state.likeFilter === "unliked" ? " checked" : "") +
+      "> No like only</label>" +
+      "</span>"
+    );
   }
 
   function previewToolbarHtml() {
@@ -1348,18 +2137,12 @@
       "</span>" +
       '<button type="button" class="gallery-nav-btn" id="gallery-next" aria-label="Next image" title="Next image">›</button>' +
       '<button type="button" class="gallery-nav-btn" id="gallery-last" aria-label="Last image" title="Last image">»</button>' +
-      '<span class="gallery-like-filters" role="radiogroup" aria-label="Like filter">' +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="all"' +
-      (state.likeFilter === "all" ? " checked" : "") +
-      "> All</label>" +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="liked"' +
-      (state.likeFilter === "liked" ? " checked" : "") +
-      "> Liked only</label>" +
-      '<label class="gallery-filter"><input type="radio" name="gallery-like-filter" value="unliked"' +
-      (state.likeFilter === "unliked" ? " checked" : "") +
-      "> No like only</label>" +
+      filterRadiosHtml() +
+      '<span class="gallery-hint">' +
+      (state.multi
+        ? "Use ← → to browse · Shift+<glyph> toggles classes · Shift+0 clears"
+        : "Use ← → to browse · Shift+Space to like or unlike") +
       "</span>" +
-      '<span class="gallery-hint">Use ← → to browse · Shift+Space to like or unlike</span>' +
       "</div>"
     );
   }
@@ -1403,9 +2186,12 @@
       previewToolbarHtml() +
       '<div class="gallery-preview-stage" id="gallery-preview-stage">' +
       '<span class="gallery-liked-mark" hidden aria-hidden="true">★</span>' +
+      '<span class="gallery-class-mark" hidden aria-hidden="true"></span>' +
       '<img id="gallery-preview-image" alt="" decoding="async">' +
       '<div class="gallery-preview-actions">' +
-      '<button type="button" class="gallery-action-btn gallery-like-toggle" id="gallery-like" aria-pressed="false">☆ Like</button>' +
+      '<button type="button" class="gallery-action-btn gallery-like-toggle" id="gallery-like" aria-pressed="false">' +
+      (state.multi ? "No class" : "☆ Like") +
+      "</button>" +
       '<button type="button" class="gallery-action-btn" id="gallery-view">View</button>' +
       '<button type="button" class="gallery-action-btn" id="gallery-download">Download</button>' +
       '<button type="button" class="gallery-action-btn" id="gallery-fit" aria-pressed="false">Fit to width</button>' +
@@ -1427,15 +2213,33 @@
     if (!state.showGrid || !images.length) return "";
     items = images
       .map(function (img, i) {
-        var liked = isLiked(img);
+        var classList = state.multi ? classesOf(img) : [];
+        var klass = classList.length ? classList[0] : 0;
+        var label = classLabel(classList);
+        var liked = !state.multi && isLiked(img);
         return (
           '<button type="button" class="gallery-grid-item' +
           (i === state.index ? " is-active" : "") +
           (liked ? " is-liked" : "") +
-          '" data-index="' +
+          (klass ? " is-classified" : "") +
+          (classList.length > 1 ? " is-multiclass" : "") +
+          '"' +
+          (klass
+            ? ' data-class="' +
+              escapeHtml(label) +
+              '" style="--class-color:' +
+              classColor(klass) +
+              '"'
+            : "") +
+          ' data-index="' +
           i +
           '" title="' +
-          escapeHtml(img.name) +
+          escapeHtml(
+            img.name +
+              (classList.length
+                ? " · " + classNameLabel(classList) + " [" + label + "]"
+                : "")
+          ) +
           '">' +
           '<span class="gallery-grid-thumb">' +
           '<img src="' +
@@ -1443,19 +2247,44 @@
           '" alt="' +
           escapeHtml(img.name) +
           '" loading="lazy" decoding="async">' +
-          '<span class="gallery-like-btn' +
-          (liked ? " is-liked" : "") +
-          '" role="button" tabindex="0" aria-pressed="' +
-          (liked ? "true" : "false") +
-          '" aria-label="' +
-          (liked ? "Unlike" : "Like") +
-          '" title="' +
-          (liked ? "Unlike" : "Like") +
-          '" data-like-index="' +
-          i +
-          '">' +
-          (liked ? "★" : "☆") +
-          "</span>" +
+          (state.multi
+            ? '<span class="gallery-class-btn' +
+              (klass ? " is-classified" : "") +
+              (classList.length > 1 ? " is-multiclass" : "") +
+              '" role="button" tabindex="0" aria-pressed="' +
+              (klass ? "true" : "false") +
+              '" aria-label="' +
+              (classList.length ? classNameLabel(classList) : "No class") +
+              '" title="' +
+              (classList.length
+                ? classNameLabel(classList) + " [" + label + "] — click to clear all"
+                : "Use Shift+<glyph> to add classes") +
+              '" data-like-index="' +
+              i +
+              '"' +
+              (klass
+                ? ' data-class="' +
+                  escapeHtml(label) +
+                  '" style="--class-color:' +
+                  classColor(klass) +
+                  '"'
+                : "") +
+              ">" +
+              (label || "·") +
+              "</span>"
+            : '<span class="gallery-like-btn' +
+              (liked ? " is-liked" : "") +
+              '" role="button" tabindex="0" aria-pressed="' +
+              (liked ? "true" : "false") +
+              '" aria-label="' +
+              (liked ? "Unlike" : "Like") +
+              '" title="' +
+              (liked ? "Unlike" : "Like") +
+              '" data-like-index="' +
+              i +
+              '">' +
+              (liked ? "★" : "☆") +
+              "</span>") +
           "</span>" +
           '<span class="gallery-grid-name">' +
           imageNameLinkHtml(img) +
@@ -1539,10 +2368,32 @@
     } else if (key === "End") {
       event.preventDefault();
       setIndex(visibleImages().length - 1);
-    } else if ((key === "l" || key === "L") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    } else if (
+      state.multi &&
+      event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.repeat
+    ) {
+      if (isClearClassShortcut(event)) {
+        event.preventDefault();
+        clearClass(state.index);
+      } else if (slotFromGlyphEvent(event)) {
+        event.preventDefault();
+        assignClass(state.index, slotFromGlyphEvent(event));
+      }
+    } else if (
+      !state.multi &&
+      (key === "l" || key === "L") &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    ) {
       event.preventDefault();
       toggleLike(state.index);
     } else if (
+      !state.multi &&
       (key === " " || event.code === "Space") &&
       event.shiftKey &&
       !event.metaKey &&
@@ -1559,6 +2410,11 @@
     if (globalsBound) return;
     globalsBound = true;
     document.addEventListener("keydown", onKeydown);
+    window.addEventListener("pagehide", flushPositionSave);
+    window.addEventListener("beforeunload", flushPositionSave);
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") flushPositionSave();
+    });
     window.addEventListener("resize", placeLikedMarks);
     document.addEventListener("fullscreenchange", function () {
       if (!document.fullscreenElement && state.fullscreen) closeFullscreen();
@@ -1659,9 +2515,30 @@
           idx = indexOfName(keep, next);
           state.index = idx >= 0 ? idx : 0;
           render();
-          savePosition();
+          flushPositionSave();
         });
       });
+      document.querySelectorAll('input[name="gallery-class-filter"]').forEach(function (radio) {
+        radio.addEventListener("change", function () {
+          var keep = currentImageName();
+          var next, idx;
+          if (!radio.checked) return;
+          state.classFilter = radio.value;
+          invalidateVisible();
+          next = visibleImages();
+          idx = indexOfName(keep, next);
+          state.index = idx >= 0 ? idx : 0;
+          render();
+          flushPositionSave();
+        });
+      });
+      (function bindEditClasses() {
+        var btn = document.getElementById("gallery-edit-classes");
+        if (!btn) return;
+        btn.addEventListener("click", function () {
+          openClassLabelEditor();
+        });
+      })();
       (function bindJump() {
         var jump = document.getElementById("gallery-jump");
         if (!jump) return;
@@ -1713,9 +2590,17 @@
         if (btn.closest("#gallery-grid-section")) return;
         btn.addEventListener("click", function () { downloadLiked(); });
       });
+      document.querySelectorAll('[data-action="download-classified"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", function () { downloadClassified(); });
+      });
       document.querySelectorAll('[data-action="unlike-all"]').forEach(function (btn) {
         if (btn.closest("#gallery-grid-section")) return;
         btn.addEventListener("click", unlikeAll);
+      });
+      document.querySelectorAll('[data-action="remove-classification"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", removeAllClassifications);
       });
       document.querySelectorAll('[data-action="copy-status"]').forEach(function (btn) {
         if (btn.closest("#gallery-grid-section")) return;
@@ -1736,14 +2621,20 @@
       document.querySelectorAll("#gallery-grid-section [data-action='download-liked']").forEach(function (btn) {
         btn.addEventListener("click", function () { downloadLiked(); });
       });
+      document.querySelectorAll("#gallery-grid-section [data-action='download-classified']").forEach(function (btn) {
+        btn.addEventListener("click", function () { downloadClassified(); });
+      });
       document.querySelectorAll("#gallery-grid-section [data-action='unlike-all']").forEach(function (btn) {
         btn.addEventListener("click", unlikeAll);
+      });
+      document.querySelectorAll("#gallery-grid-section [data-action='remove-classification']").forEach(function (btn) {
+        btn.addEventListener("click", removeAllClassifications);
       });
       document.querySelectorAll("#gallery-grid-section [data-action='copy-status']").forEach(function (btn) {
         btn.addEventListener("click", copyStatus);
       });
       grid.addEventListener("click", function (event) {
-        var like = event.target.closest(".gallery-like-btn");
+        var like = event.target.closest(".gallery-like-btn, .gallery-class-btn");
         var item;
         var preview;
         if (like) {
@@ -1760,7 +2651,9 @@
         if (preview) preview.scrollIntoView({ behavior: "smooth", block: "start" });
       });
       grid.addEventListener("keydown", function (event) {
-        var like = event.target.closest && event.target.closest(".gallery-like-btn");
+        var like =
+          event.target.closest &&
+          event.target.closest(".gallery-like-btn, .gallery-class-btn");
         if (!like) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -1943,6 +2836,173 @@
     });
   }
 
+  function classLabelFormError(name, glyph, slot) {
+    var n = String(name == null ? "" : name).trim();
+    var g = String(glyph == null ? "" : glyph).trim();
+    var conflict;
+    if (!n) return "Enter a class name.";
+    if (/\s/.test(n)) return "Class names must be a single word (no spaces).";
+    if (!CLASS_NAME_RE.test(n)) {
+      return "Class names must start with a letter and use only letters, digits, _ or -.";
+    }
+    if (!g) return "Enter a glyph (one letter or digit).";
+    if (!CLASS_GLYPH_RE.test(g)) return "Glyph must be a single letter or digit.";
+    conflict = glyphConflict(slot, g);
+    if (conflict) return conflict;
+    return "";
+  }
+
+  function refreshClassModalList() {
+    var listEl = document.getElementById("class-modal-list");
+    var i;
+    var def;
+    if (!listEl) return;
+    ensureClassDefs();
+    listEl.innerHTML = "";
+    for (i = 1; i <= MAX_CLASS; i++) {
+      def = state.classDefs[i];
+      listEl.innerHTML +=
+        "<li><code>" +
+        escapeHtml(classShortcutHint(i)) +
+        "</code> · <strong>" +
+        escapeHtml(classDisplayWithGlyph(i)) +
+        '</strong> <span class="gallery-class-glyph-sample" style="--class-color:' +
+        classColor(i) +
+        '">' +
+        escapeHtml(classGlyph(i)) +
+        "</span></li>";
+    }
+  }
+
+  function fillClassModalFields(slot) {
+    var nameInput = document.getElementById("class-modal-name");
+    var glyphInput = document.getElementById("class-modal-glyph");
+    var def;
+    ensureClassDefs();
+    def = state.classDefs[slot] || { name: "class" + slot, glyph: String(slot) };
+    if (nameInput) nameInput.value = def.name === "class" + slot ? "" : def.name;
+    if (glyphInput) glyphInput.value = def.glyph === String(slot) ? "" : def.glyph;
+  }
+
+  function openClassLabelEditor() {
+    var modal = document.getElementById("class-modal");
+    var slotSelect = document.getElementById("class-modal-slot");
+    var nameInput = document.getElementById("class-modal-name");
+    var glyphInput = document.getElementById("class-modal-glyph");
+    var errorEl = document.getElementById("class-modal-error");
+    var confirmBtn = document.getElementById("class-modal-confirm");
+    var i;
+    if (!modal || !slotSelect || !nameInput || !glyphInput || !confirmBtn) return;
+
+    function setError(message) {
+      if (!errorEl) return;
+      if (message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+        nameInput.classList.add("is-invalid");
+        glyphInput.classList.add("is-invalid");
+      } else {
+        errorEl.textContent = "";
+        errorEl.hidden = true;
+        nameInput.classList.remove("is-invalid");
+        glyphInput.classList.remove("is-invalid");
+      }
+    }
+
+    function close() {
+      modal.hidden = true;
+      document.removeEventListener("keydown", onKeydown, true);
+      modal.removeEventListener("click", onClick);
+      confirmBtn.removeEventListener("click", onConfirm);
+      slotSelect.removeEventListener("change", onSlotChange);
+      nameInput.removeEventListener("input", onInput);
+      glyphInput.removeEventListener("input", onInput);
+    }
+
+    function onSlotChange() {
+      fillClassModalFields(parseInt(slotSelect.value, 10));
+      setError("");
+    }
+
+    async function onConfirm() {
+      var slot = parseInt(slotSelect.value, 10);
+      var name = String(nameInput.value || "").trim();
+      var glyph = String(glyphInput.value || "").trim();
+      var err = classLabelFormError(name, glyph, slot);
+      if (err) {
+        setError(err);
+        return;
+      }
+      ensureClassDefs();
+      state.classDefs[slot] = { name: name, glyph: glyph };
+      confirmBtn.disabled = true;
+      if (!(await saveClassDefs())) {
+        confirmBtn.disabled = false;
+        return;
+      }
+      confirmBtn.disabled = false;
+      close();
+      render();
+      showToast("Class label saved");
+    }
+
+    function onClick(event) {
+      if (event.target && event.target.hasAttribute("data-class-modal-dismiss")) {
+        close();
+      }
+    }
+
+    function onKeydown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+        return;
+      }
+      if (
+        event.key === "Enter" &&
+        (event.target === nameInput || event.target === glyphInput)
+      ) {
+        event.preventDefault();
+        onConfirm();
+      }
+    }
+
+    function onInput() {
+      if (errorEl && !errorEl.hidden) setError("");
+    }
+
+    slotSelect.innerHTML = "";
+    for (i = 1; i <= MAX_CLASS; i++) {
+      slotSelect.innerHTML +=
+        '<option value="' +
+        i +
+        '">' +
+        escapeHtml(classShortcutHint(i)) +
+        " · " +
+        escapeHtml(classDisplayWithGlyph(i)) +
+        "</option>";
+    }
+    if (state.classFilter !== "all" && state.classFilter !== "none") {
+      slotSelect.value = state.classFilter;
+    } else {
+      slotSelect.value = "1";
+    }
+    fillClassModalFields(parseInt(slotSelect.value, 10));
+    refreshClassModalList();
+    setError("");
+    modal.hidden = false;
+    modal.addEventListener("click", onClick);
+    confirmBtn.addEventListener("click", onConfirm);
+    slotSelect.addEventListener("change", onSlotChange);
+    nameInput.addEventListener("input", onInput);
+    glyphInput.addEventListener("input", onInput);
+    document.addEventListener("keydown", onKeydown, true);
+    requestAnimationFrame(function () {
+      nameInput.focus();
+      nameInput.select();
+    });
+  }
+
   async function startNewSession() {
     var dir = normalizeDir(dirInput ? dirInput.value : "");
     var sid;
@@ -2013,7 +3073,12 @@
     state.index = 0;
     state.filmstripStart = -1;
     state.filmstripEnd = -1;
-    await loadLikes();
+    if (state.multi) {
+      await loadClassDefs();
+      await loadMulti();
+    } else {
+      await loadLikes();
+    }
     invalidateVisible();
     if (state.startFromQuery != null) {
       (function applyStartFromQuery() {
@@ -2030,7 +3095,23 @@
       state.startFromQuery = null;
     } else {
       (function restorePosition(savedName) {
-        var idx = indexOfName(savedName, visibleImages());
+        var visible = visibleImages();
+        var idx = indexOfName(savedName, visible);
+        // If a class/like filter hides the saved image, widen the filter so
+        // resume still lands on it.
+        if (idx < 0 && savedName) {
+          if (state.multi && state.classFilter !== "all") {
+            state.classFilter = "all";
+            invalidateVisible();
+            visible = visibleImages();
+            idx = indexOfName(savedName, visible);
+          } else if (!state.multi && state.likeFilter !== "all") {
+            state.likeFilter = "all";
+            invalidateVisible();
+            visible = visibleImages();
+            idx = indexOfName(savedName, visible);
+          }
+        }
         state.index = idx >= 0 ? idx : 0;
       })(await loadPosition());
     }
@@ -2048,6 +3129,8 @@
       return;
     }
     render();
+    syncUrlState();
+    savePositionNow();
   }
 
   function boot() {

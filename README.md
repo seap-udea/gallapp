@@ -51,14 +51,15 @@ http://localhost:8000/gallapp/?dir=images/my-folder&session=alice
 ## Features
 
 - **Browse.** Large preview, horizontal filmstrip, and optional thumbnail grid. Move with the arrows, first/last, swipe, or the counter field.
-- **Named sessions.** **New session** opens an on-page name dialog, then a new tab for that session. Each name gets its own likes and position files. Omit `session` for the default session.
-- **Like / unlike.** Mark images with **Like**, the star on a thumbnail, `L`, or Shift+Space. Liked images show a gold star and a thick border in the grid. **Unlike all** clears every like in the current session.
-- **Like filters.** Radios **All**, **Liked only**, and **No like only** limit what you see.
+- **Named sessions.** **New session** opens an on-page name dialog, then a new tab for that session. Each name gets its own likes/classifications and position files. Omit `session` for the default session.
+- **Like / unlike** (default mode). Mark images with **Like**, the star on a thumbnail, `L`, or Shift+Space. Liked images show a gold star and a thick border. **Unlike all** clears every like in the current session.
+- **Like filters** (default mode). Radios **All**, **Liked only**, and **No like only**.
+- **Multi-class mode** (`multi=true`). Open it from the **Multi classification** link in the gallery header (or set `multi=true` in the URL). Use **Edit classes** to set a one-word **name** and a one-character **glyph** per class (saved in `.gallapp_classes`). Classify with **Shift+glyph** (e.g. Shift+c for glyph `c`); the shortcut updates as soon as labels are saved. **Shift+0** clears all classes on the current image. An image may carry several classes. Radios show class names; badges show glyphs. Buttons become **Download classified** and **Remove classification**. Use **Like mode** in the header to switch back.
 - **Name filter.** Pattern under the image count. `*` is a wildcard (`plot_*`). Default `*.*`.
 - **Jump.** Type a number in `1 / N` and press Enter to go to that image.
 - **Resume.** Reopening a directory (and session) continues at the last image you were viewing (unless `n=` is in the URL).
-- **Copy status.** Copies a URL with every gallery option set explicitly (`dir`, `session`, `n`, `likes`, `filter`, `grid`, `strip`), including defaults such as `session=` (default session), `likes=all`, and `grid=true`. A short “Link copied” toast confirms it.
-- **Download.** **Download** saves the image on screen. **Download liked** saves one file, or a `.zip` when several are liked.
+- **Copy status.** Copies a URL with every gallery option set explicitly (`dir`, `session`, `multi`, `n`, `likes` / `class`, `filter`, `grid`, `strip`). A short “Link copied” toast confirms it.
+- **Download.** **Download** saves the image on screen. **Download liked** / **Download classified** saves one file, or a `.zip` when several are selected.
 - **View / Fit to width / Fullscreen.** Change how the current image is shown. `Esc` closes lightbox and fullscreen.
 
 ## Where things are saved
@@ -69,8 +70,11 @@ Each image directory can hold sidecar files written by `gallapp/server.py`:
 |---|---|
 | `.gallapp_likes` | Liked filenames for the **default** session (one per line) |
 | `.gallapp_position` | Last viewed filename for the **default** session |
+| `.gallapp_multi` | Classifications for the **default** session (`filename<TAB>class`) |
+| `.gallapp_classes` | Class labels for the directory (`slot<TAB>name<TAB>glyph`) |
 | `.gallapp_likes_<session>` | Liked filenames for a named session (e.g. `alice`) |
 | `.gallapp_position_<session>` | Last viewed filename for that session |
+| `.gallapp_multi_<session>` | Classifications for that session |
 
 Example `.gallapp_likes` (or `.gallapp_likes_alice`):
 
@@ -79,9 +83,30 @@ photo_001.jpg
 photo_042.webp
 ```
 
-Those files live **inside the image folder** you opened (for example `images/my-folder/.gallapp_likes_alice`). Opening a named session creates its sidecar files if they are missing.
+Example `.gallapp_multi` (or `.gallapp_multi_alice`):
 
-If the custom server is not used (`python3 -m http.server` alone), the page can still browse images, but it cannot write those files. In that case likes and position fall back to **browser `localStorage`**, keyed by directory path and session. Recent directories on the start page are always stored in `localStorage` only.
+```text
+photo_001.jpg	1
+photo_042.webp	1,3
+photo_100.png	2,5,9
+```
+
+Each line is `filename`, a tab, then one or more class slots (`1`–`9`) separated by commas.
+
+Example `.gallapp_classes`:
+
+```text
+1	clean-fold	c
+2	scattered	s
+3	contaminated	x
+6	misaligned	m
+```
+
+Each line is keyboard slot (`1`–`9`), a tab, a one-word class name, a tab, and a one-character glyph shown on badges.
+
+Those files live **inside the image folder** you opened (for example `images/my-folder/.gallapp_multi_alice`). Opening a named session creates its sidecar files if they are missing.
+
+If the custom server is not used (`python3 -m http.server` alone), the page can still browse images, but it cannot write those files. In that case likes, classifications, and position fall back to **browser `localStorage`**, keyed by directory path and session. Recent directories on the start page are always stored in `localStorage` only.
 
 ## Query API
 
@@ -91,16 +116,19 @@ Open the gallery with GET parameters. Only `dir` is required to open a folder. *
 |---|---|---|---|
 | `dir` | Directory path relative to the server root | — | `images/my-folder` |
 | `session` | Session name (`[A-Za-z0-9_-]`, max 40). Empty or omitted = default session. | (default session) | `session=alice` |
+| `multi` | Enable multi-class mode instead of likes | `false` | `multi=true` |
 | `n` | 1-based image number after filters (`image` and `i` also work). Overrides the saved position on first load. | saved position, else `1` | `n=42` |
-| `likes` | Like filter: `all`, `liked`, or `unliked` (`view` is an alias) | `all` | `likes=liked` |
+| `likes` | Like filter (default mode): `all`, `liked`, or `unliked` (`view` is an alias) | `all` | `likes=liked` |
+| `class` | Class filter (multi mode): `all`, `none`, or `1`…`9` | `all` | `class=3` |
 | `filter` | Filename pattern (`*` wildcard) | `*.*` | `filter=plot_*` |
 | `grid` | Show the thumbnail grid: `1`/`true` or `0`/`false` | `1` | `grid=0` |
 | `strip` | Filmstrip height in pixels, 32–240 (`strip_h` also works) | `66` | `strip=96` |
 
-Example:
+Examples:
 
 ```text
 http://localhost:8000/gallapp/?dir=images/my-folder&session=alice&n=120&likes=unliked&filter=plot_*&grid=0&strip=90
+http://localhost:8000/gallapp/?dir=images/my-folder&multi=true&class=2&session=reviewer
 ```
 
 ## What it reads
@@ -118,7 +146,7 @@ If the directory contains `index.html` (or `index.htm`), Python’s server retur
 | `index.html` | Page shell and the start-up instructions. |
 | `gallery.css` | Layout and gallery styling. |
 | `gallery.js` | Directory listing, likes, preview, query API, and zip download. |
-| `server.py` | Local file server. Writes likes/position sidecars (default and named sessions). |
+| `server.py` | Local file server. Writes likes/position/multi sidecars (default and named sessions). |
 | `assets/logo-seap-banner.webp` | SEAP-UdeA mark shown beside Gallery App. Links to [seap-udea.github.io](https://seap-udea.github.io/). |
 | `assets/favicon.*` | SEAP-UdeA favicon (same set as the SEAP site). |
 
