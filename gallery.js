@@ -1700,14 +1700,16 @@
     var strip = document.getElementById("gallery-filmstrip");
     var win, html, i;
     if (!strip || !images.length) return;
-    win = filmstripWindow(images, state.index);
     if (
       !force &&
-      state.filmstripStart === win.start &&
-      state.filmstripEnd === win.end
+      state.filmstripEnd > state.filmstripStart &&
+      state.filmstripEnd <= images.length &&
+      state.index >= state.filmstripStart &&
+      state.index < state.filmstripEnd
     ) {
       return;
     }
+    win = filmstripWindow(images, state.index);
     html = "";
     for (i = win.start; i < win.end; i++) {
       html += filmstripItemHtml(images[i], i, state.index);
@@ -1715,6 +1717,37 @@
     strip.innerHTML = html;
     state.filmstripStart = win.start;
     state.filmstripEnd = win.end;
+  }
+
+  function extendFilmstrip(strip) {
+    var images = visibleImages();
+    var edge = 400;
+    var start, end, i, html, before;
+    if (!strip || !images.length || state.filmstripEnd <= state.filmstripStart) return;
+    if (state.filmstripEnd > images.length) return;
+    if (
+      state.filmstripEnd < images.length &&
+      strip.scrollWidth - strip.scrollLeft - strip.clientWidth < edge
+    ) {
+      end = Math.min(images.length, state.filmstripEnd + FILMSTRIP_RADIUS);
+      html = "";
+      for (i = state.filmstripEnd; i < end; i++) {
+        html += filmstripItemHtml(images[i], i, state.index);
+      }
+      strip.insertAdjacentHTML("beforeend", html);
+      state.filmstripEnd = end;
+    }
+    if (state.filmstripStart > 0 && strip.scrollLeft < edge) {
+      start = Math.max(0, state.filmstripStart - FILMSTRIP_RADIUS);
+      html = "";
+      for (i = start; i < state.filmstripStart; i++) {
+        html += filmstripItemHtml(images[i], i, state.index);
+      }
+      before = strip.scrollWidth;
+      strip.insertAdjacentHTML("afterbegin", html);
+      strip.scrollLeft += strip.scrollWidth - before;
+      state.filmstripStart = start;
+    }
   }
 
   function prefetchAround(images, index) {
@@ -2896,6 +2929,9 @@
       nameFilter = document.getElementById("gallery-name-filter");
 
       bindSwipe(stage);
+      if (strip) {
+        strip.addEventListener("scroll", function () { extendFilmstrip(strip); }, { passive: true });
+      }
       if (firstBtn) {
         firstBtn.addEventListener("click", function () { setIndex(0); });
       }
