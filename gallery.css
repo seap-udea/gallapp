@@ -620,6 +620,16 @@ code {
   gap: 8px;
 }
 
+label.gallery-import-sidecars {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+}
+
+.gallery-persist {
+  color: var(--muted, #656d76);
+}
+
 .gallery-get-liked {
   display: inline-flex;
   align-items: center;

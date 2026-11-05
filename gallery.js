@@ -328,6 +328,10 @@
     dir: "",
     session: "",
     multi: false,
+    // persistForced: "auto" | "file" | "session" (from ?persist=)
+    // persistMode: resolved "file" | "session" after probe
+    persistForced: "auto",
+    persistMode: "file",
     images: [],
     index: 0,
     liked: {},
@@ -480,7 +484,14 @@
   }
 
   function classDisplayWithGlyph(slot) {
-    return classDisplayName(slot) + " (" + classGlyph(slot) + ")";
+    var name = classDisplayName(slot);
+    var glyph = classGlyph(slot);
+    if (String(glyph) === String(slot)) return name;
+    return name + " (" + glyph + ")";
+  }
+
+  function classFilterCaption(slot) {
+    return classDisplayWithGlyph(slot) + " [" + classSlotCount(slot) + "]";
   }
 
   function classGlyphLabel(list) {
@@ -602,35 +613,19 @@
   }
 
   async function loadClassDefs() {
+    var text;
     state.classDefs = defaultClassDefs();
     if (!state.dir) return;
-    try {
-      var res = await fetch(classDefsFileUrl(), { cache: "no-store" });
-      if (res.ok) {
-        applyClassDefsText(await res.text());
-        return;
-      }
-    } catch (err) {}
+    text = await loadSidecarText(classDefsFileName(), classDefsFileUrl());
+    if (text != null && String(text).trim()) {
+      applyClassDefsText(text);
+    }
   }
 
   async function saveClassDefs() {
     var body = classDefsText();
-    var dir = state.dir;
-    var url = classDefsFileUrl();
-    if (!dir) return false;
-    try {
-      var res = await putSidecar(url, body);
-      if (!res.ok) throw new Error(String(res.status));
-      return true;
-    } catch (err) {
-      setStatus(
-        "Could not write " +
-          classDefsFileName() +
-          ". Start with python3 gallapp/server.py so class labels are saved in the image folder.",
-        true
-      );
-      return false;
-    }
+    if (!state.dir) return false;
+    return saveSidecarText(classDefsFileName(), classDefsFileUrl(), body);
   }
 
   function hasClass(img, klass) {
@@ -653,6 +648,10 @@
     var height;
     var number;
     state.multi = parseBoolParam(params.get("multi"), false);
+    state.persistForced = parsePersistMode(params.get("persist"));
+    if (state.persistForced !== "auto") {
+      state.persistMode = state.persistForced;
+    }
     if (session === null) {
       state.session = "";
       setStatus(
@@ -707,6 +706,10 @@
     params.set("filter", state.nameFilter || "*.*");
     params.set("grid", state.showGrid ? "true" : "false");
     params.set("strip", String(state.stripHeight || STRIP_HEIGHT_DEFAULT));
+    params.set(
+      "persist",
+      state.persistForced !== "auto" ? state.persistForced : state.persistMode || "auto"
+    );
     return params;
   }
 
@@ -832,6 +835,10 @@
     return "gallapp-multi:" + state.dir + sessionSuffix();
   }
 
+  function persistLabel() {
+    return isSessionPersist() ? "browser session" : "folder files";
+  }
+
   function galleryUrl(dir, session) {
     var params = new URLSearchParams();
     params.set("dir", dir || "");
@@ -855,33 +862,314 @@
     return res;
   }
 
+  function parsePersistMode(raw) {
+    var value = String(raw == null ? "" : raw)
+      .toLowerCase()
+      .trim();
+    if (value === "session" || value === "browser" || value === "temp") {
+      return "session";
+    }
+    if (value === "file" || value === "disk" || value === "folder") {
+      return "file";
+    }
+    return "auto";
+  }
+
+  function isSessionPersist() {
+    return state.persistMode === "session";
+  }
+
+  function sidecarBrowserKey(fileName) {
+    return "gallapp:sidecar:" + state.dir + ":" + fileName;
+  }
+
+  function readBrowserSidecar(fileName) {
+    if (!state.dir || !fileName) return null;
+    try {
+      if (window.sessionStorage.getItem(sidecarBrowserKey(fileName)) != null) {
+        return window.sessionStorage.getItem(sidecarBrowserKey(fileName));
+      }
+    } catch (err) {}
+    return null;
+  }
+
+  function writeBrowserSidecar(fileName, text) {
+    if (!state.dir || !fileName) return false;
+    try {
+      window.sessionStorage.setItem(
+        sidecarBrowserKey(fileName),
+        text == null ? "" : String(text)
+      );
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  function hasBrowserSidecar(fileName) {
+    if (!state.dir || !fileName) return false;
+    try {
+      return window.sessionStorage.getItem(sidecarBrowserKey(fileName)) != null;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async function fetchSidecarText(url) {
+    try {
+      var res = await fetch(url, { cache: "no-store" });
+      if (res.ok) return await res.text();
+    } catch (err) {}
+    return null;
+  }
+
+  async function detectPersistMode() {
+    var probeUrl;
+    var existing;
+    var res;
+    if (state.persistForced === "session") {
+      state.persistMode = "session";
+      return;
+    }
+    if (state.persistForced === "file") {
+      state.persistMode = "file";
+      return;
+    }
+    probeUrl = state.multi ? multiFileUrl() : likesFileUrl();
+    existing = (await fetchSidecarText(probeUrl)) || "";
+    try {
+      res = await putSidecar(probeUrl, existing);
+      state.persistMode = res.ok ? "file" : "session";
+    } catch (err) {
+      state.persistMode = "session";
+    }
+  }
+
+  /**
+   * Load a sidecar: in session mode prefer the browser entity, else seed from
+   * a GET (read-only repo/folder). In file mode use the disk file.
+   */
+  async function loadSidecarText(fileName, fileUrl) {
+    var browserText;
+    var remoteText;
+    if (isSessionPersist()) {
+      if (hasBrowserSidecar(fileName)) {
+        return readBrowserSidecar(fileName) || "";
+      }
+      remoteText = await fetchSidecarText(fileUrl);
+      if (remoteText != null) {
+        writeBrowserSidecar(fileName, remoteText);
+        return remoteText;
+      }
+      return null;
+    }
+    remoteText = await fetchSidecarText(fileUrl);
+    return remoteText;
+  }
+
+  async function saveSidecarText(fileName, fileUrl, body) {
+    var text = body == null ? "" : body;
+    if (isSessionPersist()) {
+      if (!writeBrowserSidecar(fileName, text)) {
+        setStatus(
+          "Could not store " +
+            fileName +
+            " in the browser session (storage full or blocked).",
+          true
+        );
+        return false;
+      }
+      return true;
+    }
+    try {
+      var res = await putSidecar(fileUrl, text);
+      if (!res.ok) throw new Error(String(res.status));
+      return true;
+    } catch (err) {
+      // Writable probe said file, but a later PUT failed — fall back once.
+      state.persistMode = "session";
+      if (!writeBrowserSidecar(fileName, text)) return false;
+      if (!state.persistFallbackWarned) {
+        state.persistFallbackWarned = true;
+        setStatus(
+          "Folder writes failed; switched to browser session storage. Use Export sidecars to save your work.",
+          true
+        );
+      }
+      return true;
+    }
+  }
+
   async function ensureSessionSidecars() {
-    var likesRes;
-    var multiRes;
-    var posRes;
     var name;
     if (!state.session || !state.dir) return true;
+    if (isSessionPersist()) {
+      if (state.multi) writeBrowserSidecar(multiFileName(), multiText());
+      else writeBrowserSidecar(likesFileName(), likesText());
+      name = currentImageName();
+      writeBrowserSidecar(positionFileName(), name ? name + "\n" : "");
+      return true;
+    }
     try {
       if (state.multi) {
-        multiRes = await putSidecar(multiFileUrl(), multiText());
-        if (!multiRes.ok) throw new Error(String(multiRes.status));
+        if (!(await saveSidecarText(multiFileName(), multiFileUrl(), multiText()))) {
+          throw new Error("multi");
+        }
         state.multiInFile = true;
       } else {
-        likesRes = await putSidecar(likesFileUrl(), likesText());
-        if (!likesRes.ok) throw new Error(String(likesRes.status));
+        if (!(await saveSidecarText(likesFileName(), likesFileUrl(), likesText()))) {
+          throw new Error("likes");
+        }
         state.likesInFile = true;
       }
       name = currentImageName();
-      posRes = await putSidecar(positionFileUrl(), name ? name + "\n" : "");
-      if (!posRes.ok) throw new Error(String(posRes.status));
+      if (
+        !(await saveSidecarText(
+          positionFileName(),
+          positionFileUrl(),
+          name ? name + "\n" : ""
+        ))
+      ) {
+        throw new Error("position");
+      }
       return true;
     } catch (err) {
+      if (isSessionPersist()) return true;
       setStatus(
-        "Could not create session files. Start with python3 gallapp/server.py so sessions are saved in the image folder.",
+        "Could not create session files. Start with python3 gallapp/server.py, or open with persist=session.",
         true
       );
       return false;
     }
+  }
+
+  function downloadTextFile(fileName, text) {
+    var blob = new Blob([text == null ? "" : text], {
+      type: "text/plain;charset=utf-8",
+    });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+
+  async function exportSessionSidecars() {
+    var entries = [];
+    var zip;
+    var blob;
+    var url;
+    var a;
+    var i;
+    if (!state.dir) return;
+    if (state.multi) {
+      entries.push({ name: classDefsFileName(), data: classDefsText() });
+      entries.push({ name: multiFileName(), data: multiText() });
+    } else {
+      entries.push({ name: likesFileName(), data: likesText() });
+    }
+    entries.push({
+      name: positionFileName(),
+      data: currentImageName() ? currentImageName() + "\n" : "",
+    });
+    if (entries.length === 1) {
+      downloadTextFile(entries[0].name, entries[0].data);
+      showToast("Exported " + entries[0].name);
+      return;
+    }
+    try {
+      zip = buildStoredZip(
+        entries.map(function (entry) {
+          return {
+            name: entry.name,
+            data: new TextEncoder().encode(entry.data || ""),
+          };
+        })
+      );
+      blob = new Blob([zip], { type: "application/zip" });
+      url = URL.createObjectURL(blob);
+      a = document.createElement("a");
+      a.href = url;
+      a.download =
+        "gallapp-sidecars" +
+        (state.session ? "_" + state.session : "") +
+        ".zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () {
+        URL.revokeObjectURL(url);
+      }, 1000);
+      showToast("Exported " + entries.length + " sidecar files");
+    } catch (err) {
+      for (i = 0; i < entries.length; i++) {
+        downloadTextFile(entries[i].name, entries[i].data);
+      }
+      showToast("Exported sidecar files");
+    }
+  }
+
+  function importSidecarFile(file) {
+    var name = String(file && file.name ? file.name : "");
+    var base = name.replace(/^.*[\\/]/, "");
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        resolve({ name: base, text: String(reader.result || "") });
+      };
+      reader.onerror = function () {
+        reject(reader.error || new Error("Could not read file"));
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  async function importSessionSidecars(fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
+    var i;
+    var item;
+    var applied = 0;
+    if (!files.length || !state.dir) return;
+    for (i = 0; i < files.length; i++) {
+      item = await importSidecarFile(files[i]);
+      if (item.name === classDefsFileName()) {
+        applyClassDefsText(item.text);
+        writeBrowserSidecar(item.name, classDefsText());
+        if (!isSessionPersist()) {
+          await saveSidecarText(item.name, classDefsFileUrl(), classDefsText());
+        }
+        applied += 1;
+      } else if (item.name === likesFileName()) {
+        applyLikesText(item.text);
+        writeBrowserSidecar(item.name, likesText());
+        if (!isSessionPersist()) {
+          await saveSidecarText(item.name, likesFileUrl(), likesText());
+        }
+        applied += 1;
+      } else if (item.name === multiFileName()) {
+        applyMultiText(item.text);
+        writeBrowserSidecar(item.name, multiText());
+        if (!isSessionPersist()) {
+          await saveSidecarText(item.name, multiFileUrl(), multiText());
+        }
+        applied += 1;
+      } else if (item.name === positionFileName()) {
+        writeBrowserSidecar(item.name, item.text);
+        applied += 1;
+      }
+    }
+    if (!applied) {
+      showToast("No .gallapp_* files recognized");
+      return;
+    }
+    invalidateVisible();
+    render();
+    showToast("Imported " + applied + " sidecar" + (applied === 1 ? "" : "s"));
   }
 
   function likesText() {
@@ -900,68 +1188,41 @@
     });
   }
 
-  function loadLikesFromStorage() {
-    state.liked = {};
+  function loadLikesFromLegacyStorage() {
     try {
       var list = JSON.parse(window.localStorage.getItem(likeStorageKey()) || "[]");
-      if (Array.isArray(list)) {
-        list.forEach(function (name) {
-          state.liked[String(name)] = true;
-        });
+      if (Array.isArray(list) && list.length) {
+        applyLikesText(list.join("\n") + "\n");
+        writeBrowserSidecar(likesFileName(), likesText());
+        return true;
       }
     } catch (err) {}
-  }
-
-  function saveLikesToStorage() {
-    try {
-      window.localStorage.setItem(likeStorageKey(), JSON.stringify(Object.keys(state.liked)));
-    } catch (err) {}
+    return false;
   }
 
   async function loadLikes() {
+    var text;
     state.liked = {};
     state.likesInFile = false;
-    try {
-      var res = await fetch(likesFileUrl(), { cache: "no-store" });
-      if (res.ok) {
-        applyLikesText(await res.text());
-        state.likesInFile = true;
-        return;
-      }
-    } catch (err) {}
-    loadLikesFromStorage();
+    text = await loadSidecarText(likesFileName(), likesFileUrl());
+    if (text != null) {
+      applyLikesText(text);
+      state.likesInFile = !isSessionPersist();
+      return;
+    }
+    if (loadLikesFromLegacyStorage()) return;
   }
 
   function saveLikes() {
     var body = likesText();
     var dir = state.dir;
-    var url = likesFileUrl();
     state.likeSave = Promise.resolve(state.likeSave)
       .catch(function () {})
       .then(function () {
         if (dir !== state.dir) return;
-        return fetch(url, {
-          method: "PUT",
-          cache: "no-store",
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-          body: body,
-        }).then(function (res) {
-          if (!res.ok) throw new Error(String(res.status));
-          state.likesInFile = true;
+        return saveSidecarText(likesFileName(), likesFileUrl(), body).then(function (ok) {
+          if (ok && !isSessionPersist()) state.likesInFile = true;
         });
-      })
-      .catch(function () {
-        if (dir !== state.dir) return;
-        saveLikesToStorage();
-        if (!state.likesSaveWarned) {
-          state.likesSaveWarned = true;
-          setStatus(
-            "Could not write " +
-              likesFileName() +
-              ". Start with python3 gallapp/server.py so likes are saved in the image folder.",
-            true
-          );
-        }
       });
   }
 
@@ -1000,69 +1261,45 @@
       });
   }
 
-  function loadMultiFromStorage() {
-    state.classes = {};
+  function loadMultiFromLegacyStorage() {
     try {
       var map = JSON.parse(window.localStorage.getItem(multiStorageKey()) || "{}");
-      if (map && typeof map === "object") {
+      if (map && typeof map === "object" && Object.keys(map).length) {
+        state.classes = {};
         Object.keys(map).forEach(function (name) {
           var list = normalizeClassList(map[name]);
           if (list.length) state.classes[name] = list;
         });
+        writeBrowserSidecar(multiFileName(), multiText());
+        return true;
       }
     } catch (err) {}
-  }
-
-  function saveMultiToStorage() {
-    try {
-      window.localStorage.setItem(multiStorageKey(), JSON.stringify(state.classes));
-    } catch (err) {}
+    return false;
   }
 
   async function loadMulti() {
+    var text;
     state.classes = {};
     state.multiInFile = false;
-    try {
-      var res = await fetch(multiFileUrl(), { cache: "no-store" });
-      if (res.ok) {
-        applyMultiText(await res.text());
-        state.multiInFile = true;
-        return;
-      }
-    } catch (err) {}
-    loadMultiFromStorage();
+    text = await loadSidecarText(multiFileName(), multiFileUrl());
+    if (text != null) {
+      applyMultiText(text);
+      state.multiInFile = !isSessionPersist();
+      return;
+    }
+    if (loadMultiFromLegacyStorage()) return;
   }
 
   function saveMulti() {
     var body = multiText();
     var dir = state.dir;
-    var url = multiFileUrl();
     state.multiSave = Promise.resolve(state.multiSave)
       .catch(function () {})
       .then(function () {
         if (dir !== state.dir) return;
-        return fetch(url, {
-          method: "PUT",
-          cache: "no-store",
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-          body: body,
-        }).then(function (res) {
-          if (!res.ok) throw new Error(String(res.status));
-          state.multiInFile = true;
+        return saveSidecarText(multiFileName(), multiFileUrl(), body).then(function (ok) {
+          if (ok && !isSessionPersist()) state.multiInFile = true;
         });
-      })
-      .catch(function () {
-        if (dir !== state.dir) return;
-        saveMultiToStorage();
-        if (!state.multiSaveWarned) {
-          state.multiSaveWarned = true;
-          setStatus(
-            "Could not write " +
-              multiFileName() +
-              ". Start with python3 gallapp/server.py so classifications are saved in the image folder.",
-            true
-          );
-        }
       });
   }
 
@@ -1080,24 +1317,26 @@
     return -1;
   }
 
+  function firstNonEmptyLine(text) {
+    return (
+      String(text || "")
+        .split(/\r?\n/)
+        .map(function (line) {
+          return line.trim();
+        })
+        .filter(function (line) {
+          return line && line.charAt(0) !== "#";
+        })[0] || ""
+    );
+  }
+
   async function loadPosition() {
-    var name = "";
-    try {
-      var res = await fetch(positionFileUrl(), { cache: "no-store" });
-      if (res.ok) {
-        name = String(await res.text())
-          .split(/\r?\n/)
-          .map(function (line) {
-            return line.trim();
-          })
-          .filter(function (line) {
-            return line && line.charAt(0) !== "#";
-          })[0] || "";
-      }
-    } catch (err) {}
+    var text = await loadSidecarText(positionFileName(), positionFileUrl());
+    var name = firstNonEmptyLine(text);
     if (!name) {
       try {
         name = window.localStorage.getItem(positionStorageKey()) || "";
+        if (name) writeBrowserSidecar(positionFileName(), name + "\n");
       } catch (err) {}
     }
     return name;
@@ -1106,7 +1345,6 @@
   function savePositionNow() {
     var name = currentImageName();
     var dir = state.dir;
-    var url = positionFileUrl();
     syncUrlState();
     if (!name || !dir) return;
     try {
@@ -1116,16 +1354,8 @@
       .catch(function () {})
       .then(function () {
         if (dir !== state.dir) return;
-        return fetch(url, {
-          method: "PUT",
-          cache: "no-store",
-          headers: { "Content-Type": "text/plain; charset=utf-8" },
-          body: name + "\n",
-        }).then(function (res) {
-          if (!res.ok) throw new Error(String(res.status));
-        });
-      })
-      .catch(function () {});
+        return saveSidecarText(positionFileName(), positionFileUrl(), name + "\n");
+      });
   }
 
   function savePosition() {
@@ -1244,6 +1474,42 @@
       if (isClassified(img)) n += 1;
     });
     return n;
+  }
+
+  function classSlotCount(slot) {
+    var n = 0;
+    var s = parseInt(slot, 10);
+    if (!isFinite(s) || s < 1 || s > MAX_CLASS) return 0;
+    nameFilteredImages().forEach(function (img) {
+      if (hasClass(img, s)) n += 1;
+    });
+    return n;
+  }
+
+  function nameFilteredUnclassifiedCount() {
+    var n = 0;
+    nameFilteredImages().forEach(function (img) {
+      if (!isClassified(img)) n += 1;
+    });
+    return n;
+  }
+
+  function updateClassFilterCounts() {
+    if (!state.multi) return;
+    document.querySelectorAll(".gallery-filter-count[data-class-slot]").forEach(function (el) {
+      var slot = el.getAttribute("data-class-slot");
+      var count;
+      if (slot === "none") count = nameFilteredUnclassifiedCount();
+      else count = classSlotCount(slot);
+      el.textContent = "[" + count + "]";
+    });
+    document.querySelectorAll(".gallery-filter-class[data-class-slot]").forEach(function (el) {
+      var slot = el.getAttribute("data-class-slot");
+      el.setAttribute(
+        "title",
+        classShortcutHint(parseInt(slot, 10)) + " · " + classFilterCaption(slot)
+      );
+    });
   }
 
   function updateImageCountLine() {
@@ -1509,6 +1775,7 @@
           }
         });
         placeLikedMarks();
+        updateClassFilterCounts();
         updateLikedActions(
           state.classFilter !== "all" && state.classFilter !== "none"
             ? classifiedImages().length
@@ -2000,6 +2267,16 @@
     }
   }
 
+  function sidecarActionsHtml() {
+    return (
+      '<button type="button" class="gallery-action-btn" data-action="export-sidecars" title="Download the current .gallapp_* sidecars (likes/classes/position)">Export sidecars</button>' +
+      '<label class="gallery-action-btn gallery-import-sidecars" title="Load .gallapp_* text files into this session">' +
+      "Import sidecars" +
+      '<input type="file" hidden accept="text/plain,.txt,*/*" multiple data-action="import-sidecars">' +
+      "</label>"
+    );
+  }
+
   function downloadLikedButtonHtml() {
     if (state.multi) {
       return (
@@ -2009,6 +2286,7 @@
         '<span class="gallery-like-count">0</span>' +
         "</button>" +
         '<button type="button" class="gallery-action-btn" data-action="remove-classification" disabled>Remove classification</button>' +
+        sidecarActionsHtml() +
         '<button type="button" class="gallery-action-btn" data-action="copy-status" title="Copy a URL that restores this gallery state">Copy status</button>' +
         "</span>"
       );
@@ -2020,6 +2298,7 @@
       '<span class="gallery-like-count">0</span>' +
       "</button>" +
       '<button type="button" class="gallery-action-btn" data-action="unlike-all" disabled>Unlike all</button>' +
+      sidecarActionsHtml() +
       '<button type="button" class="gallery-action-btn" data-action="copy-status" title="Copy a URL that restores this gallery state">Copy status</button>' +
       "</span>"
     );
@@ -2038,6 +2317,13 @@
       (state.session
         ? ' · session <code class="gallery-session">' + escapeHtml(state.session) + "</code>"
         : " · default session") +
+      ' · <span class="gallery-persist" title="' +
+      (isSessionPersist()
+        ? "Likes/classes are temporary .gallapp_* entities in this browser tab (sessionStorage). Export to keep them."
+        : "Likes/classes are written as .gallapp_* files in the image folder.") +
+      '">' +
+      escapeHtml(persistLabel()) +
+      "</span>" +
       (state.multi ? ' · <span class="gallery-mode-multi">multi class</span>' : "") +
       modeSwitchHtml() +
       "</p>" +
@@ -2089,22 +2375,30 @@
         "> All</label>" +
         '<label class="gallery-filter"><input type="radio" name="gallery-class-filter" value="none"' +
         (state.classFilter === "none" ? " checked" : "") +
-        "> No class</label>";
+        '> No class <span class="gallery-filter-count" data-class-slot="none">[' +
+        nameFilteredUnclassifiedCount() +
+        "]</span></label>";
       for (i = 1; i <= MAX_CLASS; i++) {
         html +=
-          '<label class="gallery-filter gallery-filter-class" style="--class-color:' +
+          '<label class="gallery-filter gallery-filter-class" data-class-slot="' +
+          i +
+          '" style="--class-color:' +
           classColor(i) +
           '" title="' +
           escapeHtml(classShortcutHint(i)) +
           " · " +
-          escapeHtml(classDisplayWithGlyph(i)) +
+          escapeHtml(classFilterCaption(i)) +
           '"><input type="radio" name="gallery-class-filter" value="' +
           i +
           '"' +
           (state.classFilter === String(i) ? " checked" : "") +
           "> " +
           escapeHtml(classDisplayWithGlyph(i)) +
-          "</label>";
+          ' <span class="gallery-filter-count" data-class-slot="' +
+          i +
+          '">[' +
+          classSlotCount(i) +
+          "]</span></label>";
       }
       html +=
         '<button type="button" class="gallery-action-btn gallery-edit-classes" id="gallery-edit-classes" title="Edit class names and glyphs">Edit classes</button>';
@@ -2606,6 +2900,20 @@
         if (btn.closest("#gallery-grid-section")) return;
         btn.addEventListener("click", copyStatus);
       });
+      document.querySelectorAll('[data-action="export-sidecars"]').forEach(function (btn) {
+        if (btn.closest("#gallery-grid-section")) return;
+        btn.addEventListener("click", function () {
+          exportSessionSidecars();
+        });
+      });
+      document.querySelectorAll('input[data-action="import-sidecars"]').forEach(function (input) {
+        if (input.closest("#gallery-grid-section")) return;
+        input.addEventListener("change", function () {
+          var list = input.files;
+          input.value = "";
+          importSessionSidecars(list);
+        });
+      });
       if (strip) {
         strip.addEventListener("click", function (event) {
           var item = event.target.closest("[data-index]");
@@ -2633,6 +2941,20 @@
       document.querySelectorAll("#gallery-grid-section [data-action='copy-status']").forEach(function (btn) {
         btn.addEventListener("click", copyStatus);
       });
+      document.querySelectorAll("#gallery-grid-section [data-action='export-sidecars']").forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          exportSessionSidecars();
+        });
+      });
+      document
+        .querySelectorAll("#gallery-grid-section input[data-action='import-sidecars']")
+        .forEach(function (input) {
+          input.addEventListener("change", function () {
+            var list = input.files;
+            input.value = "";
+            importSessionSidecars(list);
+          });
+        });
       grid.addEventListener("click", function (event) {
         var like = event.target.closest(".gallery-like-btn, .gallery-class-btn");
         var item;
@@ -3036,6 +3358,7 @@
         (state.session ? " (session " + state.session + ")" : "") +
         "…"
     );
+    await detectPersistMode();
     document.title =
       basenameDir(dir) +
       (state.session ? " · " + state.session : "") +
