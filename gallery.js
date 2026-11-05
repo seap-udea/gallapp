@@ -7,7 +7,10 @@
   var SESSION_NAME_MAX = 40;
   var CLASS_NAME_RE = /^[A-Za-z][A-Za-z0-9_-]{0,39}$/;
   var CLASS_GLYPH_RE = /^[A-Za-z0-9]$/;
-  var MAX_CLASS = 9;
+  // Each class needs a unique one-character glyph (1-9, a-z); 0 clears the class.
+  var CLASS_GLYPH_POOL = "123456789abcdefghijklmnopqrstuvwxyz";
+  var CLASS_LIMIT = CLASS_GLYPH_POOL.length;
+  var DEFAULT_CLASS_COUNT = 3;
   var CLASS_COLORS = {
     1: "#0969da",
     2: "#1a7f37",
@@ -346,6 +349,7 @@
     liked: {},
     classes: {},
     classDefs: {},
+    classCount: DEFAULT_CLASS_COUNT,
     likeFilter: "all",
     classFilter: "all",
     nameFilter: "*.*",
@@ -465,13 +469,31 @@
     return ".gallapp_classes";
   }
 
-  function defaultClassDefs() {
-    var defs = {};
+  function freeClassGlyph(defs, preferred) {
+    var used = {};
     var i;
-    for (i = 1; i <= MAX_CLASS; i++) {
-      defs[i] = { name: "class" + i, glyph: String(i) };
+    Object.keys(defs).forEach(function (slot) {
+      used[String(defs[slot].glyph).toLowerCase()] = true;
+    });
+    if (preferred && !used[String(preferred).toLowerCase()]) return String(preferred);
+    for (i = 0; i < CLASS_GLYPH_POOL.length; i++) {
+      if (!used[CLASS_GLYPH_POOL.charAt(i)]) return CLASS_GLYPH_POOL.charAt(i);
     }
+    return "";
+  }
+
+  /** Makes sure slots 1..count all exist, creating the missing ones. */
+  function fillClassDefs(defs, count) {
+    var i;
+    for (i = 1; i <= count; i++) {
+      if (!defs[i]) defs[i] = { name: "class" + i, glyph: freeClassGlyph(defs, String(i)) };
+    }
+    state.classCount = count;
     return defs;
+  }
+
+  function defaultClassDefs() {
+    return fillClassDefs({}, DEFAULT_CLASS_COUNT);
   }
 
   function ensureClassDefs() {
@@ -479,6 +501,33 @@
       state.classDefs = defaultClassDefs();
     }
     return state.classDefs;
+  }
+
+  function classCount() {
+    ensureClassDefs();
+    return state.classCount;
+  }
+
+  /** Classes used by the images must exist even if .gallapp_classes is shorter. */
+  function growClassCountToData() {
+    var max = classCount();
+    Object.keys(state.classes).forEach(function (name) {
+      normalizeClassList(state.classes[name]).forEach(function (slot) {
+        if (slot > max) max = slot;
+      });
+    });
+    if (max > classCount()) fillClassDefs(state.classDefs, max);
+  }
+
+  function addClass() {
+    var slot = classCount() + 1;
+    if (slot > CLASS_LIMIT) return 0;
+    state.classDefs[slot] = {
+      name: "class" + slot,
+      glyph: freeClassGlyph(state.classDefs, String(slot)),
+    };
+    state.classCount = slot;
+    return slot;
   }
 
   function classDisplayName(slot) {
@@ -535,7 +584,7 @@
       return "none";
     }
     n = parseInt(value.replace(/^class-?/, ""), 10);
-    if (isFinite(n) && n >= 1 && n <= MAX_CLASS) return String(n);
+    if (isFinite(n) && n >= 1 && n <= CLASS_LIMIT) return String(n);
     return "all";
   }
 
@@ -544,7 +593,7 @@
     var seen = {};
     function add(raw) {
       var n = parseInt(raw, 10);
-      if (!isFinite(n) || n < 1 || n > MAX_CLASS || seen[n]) return;
+      if (!isFinite(n) || n < 1 || n > CLASS_LIMIT || seen[n]) return;
       seen[n] = true;
       list.push(n);
     }
@@ -577,7 +626,8 @@
   }
 
   function classColor(n) {
-    return CLASS_COLORS[n] || "";
+    if (!n) return "";
+    return CLASS_COLORS[n] || "hsl(" + ((n * 47) % 360) + ", 60%, 38%)";
   }
 
   function classDefsFileUrl() {
@@ -588,18 +638,18 @@
     var lines = [];
     var i;
     var def;
-    ensureClassDefs();
-    for (i = 1; i <= MAX_CLASS; i++) {
+    var count = classCount();
+    // Every class is listed: the number of lines is the number of classes.
+    for (i = 1; i <= count; i++) {
       def = state.classDefs[i];
-      if (!def) continue;
-      if (def.name === "class" + i && def.glyph === String(i)) continue;
       lines.push(i + "\t" + def.name + "\t" + def.glyph);
     }
-    return lines.length ? lines.join("\n") + "\n" : "";
+    return lines.join("\n") + "\n";
   }
 
   function applyClassDefsText(text) {
-    var defs = defaultClassDefs();
+    var defs = {};
+    var count = DEFAULT_CLASS_COUNT;
     String(text || "")
       .split(/\r?\n/)
       .forEach(function (line) {
@@ -614,11 +664,12 @@
         slot = parseInt(parts[0], 10);
         name = String(parts[1] || "").trim();
         glyph = String(parts[2] || "").trim();
-        if (!isFinite(slot) || slot < 1 || slot > MAX_CLASS) return;
+        if (!isFinite(slot) || slot < 1 || slot > CLASS_LIMIT) return;
         if (!CLASS_NAME_RE.test(name) || !CLASS_GLYPH_RE.test(glyph)) return;
         defs[slot] = { name: name, glyph: glyph };
+        if (slot > count) count = slot;
       });
-    state.classDefs = defs;
+    state.classDefs = fillClassDefs(defs, count);
   }
 
   async function loadClassDefs() {
@@ -780,7 +831,7 @@
     return (
       ' · <a class="gallery-mode-link" href="' +
       escapeHtml(modeSwitchUrl(true)) +
-      '" title="Classify images into classes 1–9">Multi classification</a>'
+      '" title="Classify images into your own classes">Multi classification</a>'
     );
   }
 
@@ -1225,6 +1276,7 @@
         applied += 1;
       } else if (item.name === multiFileName()) {
         applyMultiText(item.text);
+        growClassCountToData();
         writeBrowserSidecar(item.name, multiText());
         if (!isSessionPersist()) {
           await saveSidecarText(item.name, multiFileUrl(), multiText());
@@ -1551,7 +1603,7 @@
   function classSlotCount(slot) {
     var n = 0;
     var s = parseInt(slot, 10);
-    if (!isFinite(s) || s < 1 || s > MAX_CLASS) return 0;
+    if (!isFinite(s) || s < 1 || s > classCount()) return 0;
     nameFilteredImages().forEach(function (img) {
       if (hasClass(img, s)) n += 1;
     });
@@ -2061,7 +2113,7 @@
     var list;
     var pos;
     if (!img || !state.multi) return;
-    if (!klass || klass < 1 || klass > MAX_CLASS) return;
+    if (!klass || klass < 1 || klass > classCount()) return;
     list = classesOf(img).slice();
     pos = list.indexOf(klass);
     if (pos >= 0) list.splice(pos, 1);
@@ -2100,8 +2152,7 @@
     var i;
     var glyph;
     if (!pressed || pressed === "0") return 0;
-    ensureClassDefs();
-    for (i = 1; i <= MAX_CLASS; i++) {
+    for (i = 1; i <= classCount(); i++) {
       glyph = String(classGlyph(i) || "").toLowerCase();
       if (glyph === pressed) return i;
     }
@@ -2123,8 +2174,7 @@
   function classShortcutsHint() {
     var parts = [];
     var i;
-    ensureClassDefs();
-    for (i = 1; i <= MAX_CLASS; i++) {
+    for (i = 1; i <= classCount(); i++) {
       parts.push(classShortcutHint(i) + "=" + classDisplayName(i));
     }
     return parts.join(" · ");
@@ -2133,8 +2183,7 @@
   function glyphConflict(slot, glyph) {
     var i;
     var g = String(glyph || "").toLowerCase();
-    ensureClassDefs();
-    for (i = 1; i <= MAX_CLASS; i++) {
+    for (i = 1; i <= classCount(); i++) {
       if (i === slot) continue;
       if (String(classGlyph(i) || "").toLowerCase() === g) {
         return "Glyph \"" + glyph + "\" is already used by " + classDisplayName(i) + ".";
@@ -2452,7 +2501,7 @@
         '> No class <span class="gallery-filter-count" data-class-slot="none">[' +
         nameFilteredUnclassifiedCount() +
         "]</span></label>";
-      for (i = 1; i <= MAX_CLASS; i++) {
+      for (i = 1; i <= classCount(); i++) {
         html +=
           '<label class="gallery-filter gallery-filter-class" data-class-slot="' +
           i +
@@ -3264,7 +3313,7 @@
     if (!listEl) return;
     ensureClassDefs();
     listEl.innerHTML = "";
-    for (i = 1; i <= MAX_CLASS; i++) {
+    for (i = 1; i <= classCount(); i++) {
       def = state.classDefs[i];
       listEl.innerHTML +=
         "<li><code>" +
@@ -3284,9 +3333,25 @@
     var glyphInput = document.getElementById("class-modal-glyph");
     var def;
     ensureClassDefs();
-    def = state.classDefs[slot] || { name: "class" + slot, glyph: String(slot) };
+    def = state.classDefs[slot] || { name: "class" + slot, glyph: "" };
     if (nameInput) nameInput.value = def.name === "class" + slot ? "" : def.name;
-    if (glyphInput) glyphInput.value = def.glyph === String(slot) ? "" : def.glyph;
+    if (glyphInput) glyphInput.value = def.glyph;
+  }
+
+  function fillClassModalSlots(slotSelect, selected) {
+    var i;
+    slotSelect.innerHTML = "";
+    for (i = 1; i <= classCount(); i++) {
+      slotSelect.innerHTML +=
+        '<option value="' +
+        i +
+        '">' +
+        escapeHtml(classShortcutHint(i)) +
+        " · " +
+        escapeHtml(classDisplayWithGlyph(i)) +
+        "</option>";
+    }
+    slotSelect.value = String(selected);
   }
 
   function openClassLabelEditor() {
@@ -3296,7 +3361,8 @@
     var glyphInput = document.getElementById("class-modal-glyph");
     var errorEl = document.getElementById("class-modal-error");
     var confirmBtn = document.getElementById("class-modal-confirm");
-    var i;
+    var addBtn = document.getElementById("class-modal-add");
+    var initialSlot;
     if (!modal || !slotSelect || !nameInput || !glyphInput || !confirmBtn) return;
 
     function setError(message) {
@@ -3319,9 +3385,42 @@
       document.removeEventListener("keydown", onKeydown, true);
       modal.removeEventListener("click", onClick);
       confirmBtn.removeEventListener("click", onConfirm);
+      if (addBtn) addBtn.removeEventListener("click", onAdd);
       slotSelect.removeEventListener("change", onSlotChange);
       nameInput.removeEventListener("input", onInput);
       glyphInput.removeEventListener("input", onInput);
+    }
+
+    function updateAddButton() {
+      if (!addBtn) return;
+      addBtn.disabled = classCount() >= CLASS_LIMIT;
+      addBtn.title =
+        addBtn.disabled
+          ? "Maximum of " + CLASS_LIMIT + " classes (one glyph each)"
+          : "Create a new class";
+    }
+
+    async function onAdd() {
+      var slot = addClass();
+      if (!slot) {
+        setError("Maximum of " + CLASS_LIMIT + " classes.");
+        return;
+      }
+      addBtn.disabled = true;
+      if (!(await saveClassDefs())) {
+        state.classCount = slot - 1;
+        delete state.classDefs[slot];
+        updateAddButton();
+        return;
+      }
+      fillClassModalSlots(slotSelect, slot);
+      fillClassModalFields(slot);
+      refreshClassModalList();
+      updateAddButton();
+      setError("");
+      render();
+      nameInput.focus();
+      showToast("Class " + slot + " added");
     }
 
     function onSlotChange() {
@@ -3376,28 +3475,21 @@
       if (errorEl && !errorEl.hidden) setError("");
     }
 
-    slotSelect.innerHTML = "";
-    for (i = 1; i <= MAX_CLASS; i++) {
-      slotSelect.innerHTML +=
-        '<option value="' +
-        i +
-        '">' +
-        escapeHtml(classShortcutHint(i)) +
-        " · " +
-        escapeHtml(classDisplayWithGlyph(i)) +
-        "</option>";
-    }
-    if (state.classFilter !== "all" && state.classFilter !== "none") {
-      slotSelect.value = state.classFilter;
-    } else {
-      slotSelect.value = "1";
-    }
-    fillClassModalFields(parseInt(slotSelect.value, 10));
+    initialSlot =
+      state.classFilter !== "all" &&
+      state.classFilter !== "none" &&
+      parseInt(state.classFilter, 10) <= classCount()
+        ? parseInt(state.classFilter, 10)
+        : 1;
+    fillClassModalSlots(slotSelect, initialSlot);
+    fillClassModalFields(initialSlot);
     refreshClassModalList();
+    updateAddButton();
     setError("");
     modal.hidden = false;
     modal.addEventListener("click", onClick);
     confirmBtn.addEventListener("click", onConfirm);
+    if (addBtn) addBtn.addEventListener("click", onAdd);
     slotSelect.addEventListener("change", onSlotChange);
     nameInput.addEventListener("input", onInput);
     glyphInput.addEventListener("input", onInput);
@@ -3631,6 +3723,7 @@
     if (state.multi) {
       await loadClassDefs();
       await loadMulti();
+      growClassCountToData();
     } else {
       await loadLikes();
     }

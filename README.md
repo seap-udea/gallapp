@@ -55,7 +55,7 @@ http://localhost:8000/gallapp/?dir=images/my-folder&session=alice
 - **Like / unlike** (default mode). Mark images with **Like**, the star on a thumbnail, `L`, or Shift+Space. Liked images show a gold star and a thick border. **Unlike all** clears every like in the current session.
 - **Like filters** (default mode). Radios **All**, **Liked only**, and **No like only**.
 - **Multi-class mode** (`multi=true`). Open it from the **Multi classification** link in the gallery header (or set `multi=true` in the URL). An image may carry **several classes** at once (multi-label). Buttons become **Download classified** and **Remove classification**. Use **Like mode** in the header to switch back.
-- **Edit classes.** In multi mode, **Edit classes** opens a form for each of the nine slots (`1`–`9`): a one-word **name** and a one-character **glyph** (letter or digit). Labels are saved in `.gallapp_classes` in the image folder and are **shared by all sessions** in that directory. Glyphs must be unique across classes. Until you customize a slot, its default name is `classN` and its glyph is the digit `N`.
+- **Edit classes.** In multi mode, **Edit classes** opens a form to edit each class (slots `1`, `2`, …): a one-word **name** and a one-character **glyph** (letter or digit). Labels are saved in `.gallapp_classes` in the image folder and are **shared by all sessions** in that directory. Glyphs must be unique across classes. The number of classes is set by `.gallapp_classes` (one line per class: slot, name, glyph); with no file there are 3. **Add class** creates a new class (up to 35, one glyph each). Until customized, a class is named `classN` with glyph `N` (letters after 9).
 - **Class shortcuts.** Classify with **Shift+glyph** for the glyph you assigned (e.g. glyph `c` → Shift+c). Shortcuts rematch as soon as you save new labels. **Shift+0** clears every class on the current image.
 - **Class labels in the UI.** Filters, button labels, and the edit-classes list show the class **name**, and the glyph in parentheses only when it differs from the slot number (e.g. `success (s)`, but `Class 6` not `Class 6 (6)`). Each class filter also shows how many matching images carry that tag (e.g. `success (s) [142]`). Thumbnail and preview badges still show glyphs only (color-coded).
 - **Name filter.** Pattern under the image count. `*` is a wildcard (`plot_*`). Default `*.*`.
@@ -95,7 +95,7 @@ photo_042.webp	1,3
 photo_100.png	2,5,9
 ```
 
-Each line is `filename`, a tab, then one or more class slots (`1`–`9`) separated by commas.
+Each line is `filename`, a tab, then one or more class slots (`1`, `2`, …) separated by commas.
 
 Example `.gallapp_classes`:
 
@@ -168,6 +168,8 @@ Open the gallery with GET parameters. Only `dir` is required to open a folder. *
 | `configuration` | Object with any option of the [Query API](#query-api) except `dir`, `repo`, `ref` and `id`: `multi`, `session`, `n`, `likes`, `class`, `filter`, `grid`, `strip`, `persist`, `preview`. Used as defaults; parameters in the URL override them. |
 
 Example: `"configuration": { "multi": true, "filter": "plot_*", "grid": false, "strip": 96 }`.
+
+Sidecars (`.gallapp_likes`, `.gallapp_multi`, `.gallapp_classes`, `.gallapp_position`, and their `_<session>` variants) already committed in the image directory are imported automatically the first time the gallery opens. From then on changes only live in the browser session; nothing is written to the repository. Use **Export sidecars** to download them and commit them yourself.
 
 The **Directory** field is always relative to the repository root. Directory listings use the GitHub API (60 unauthenticated calls per hour per IP), so they are cached in `sessionStorage` for 10 minutes; reloading or reopening the same directory in that time makes no API call. Images and `.seap-udea-gallery.json` come from `raw.githubusercontent.com` and do not count.
 
