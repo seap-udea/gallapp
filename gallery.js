@@ -645,8 +645,8 @@
     if (sessionInput) sessionInput.value = state.session || "";
   }
 
-  function applyQueryOptions() {
-    var params = queryParams();
+  function applyQueryOptions(source) {
+    var params = source || queryParams();
     var filter = params.get("filter");
     var likes = params.get("likes") || params.get("view");
     var classParam = params.get("class");
@@ -3429,7 +3429,39 @@
     setStatus("");
   }
 
+  var LISTING_TTL_MS = 10 * 60 * 1000;
+
+  function listingCacheKey(dir) {
+    return "gallapp:listing:" + state.repo + "@" + state.ref + ":" + dir;
+  }
+
+  function readListingCache(dir) {
+    try {
+      var entry = JSON.parse(window.sessionStorage.getItem(listingCacheKey(dir)));
+      if (entry && Date.now() - entry.t < LISTING_TTL_MS) return entry.images;
+    } catch (err) {}
+    return null;
+  }
+
+  function writeListingCache(dir, images) {
+    try {
+      window.sessionStorage.setItem(
+        listingCacheKey(dir),
+        JSON.stringify({ t: Date.now(), images: images })
+      );
+    } catch (err) {}
+  }
+
   async function listRemoteImages(dir) {
+    var cached = readListingCache(dir);
+    var result;
+    if (cached) return { images: cached };
+    result = await fetchRemoteListing(dir);
+    if (result.images) writeListingCache(dir, result.images);
+    return result;
+  }
+
+  async function fetchRemoteListing(dir) {
     var api =
       "https://api.github.com/repos/" +
       state.repo +
@@ -3481,9 +3513,25 @@
     };
   }
 
+  var CONFIG_OPTION_KEYS = [
+    "multi", "session", "n", "image", "i", "likes", "view", "class",
+    "filter", "grid", "strip", "strip_h", "persist", "preview",
+  ];
+
+  /** URL parameters win; configuration fills in the options the URL omits. */
+  function mergeConfiguration(configuration) {
+    var params = queryParams();
+    var merged = new URLSearchParams(params.toString());
+    CONFIG_OPTION_KEYS.forEach(function (key) {
+      var value = configuration[key];
+      if (params.has(key) || value == null || typeof value === "object") return;
+      merged.set(key, String(value));
+    });
+    return merged;
+  }
+
   /** Reads CONFIG_FILE from the repo root and applies it; returns its path. */
   async function loadRemoteConfig() {
-    var params = queryParams();
     var res, data, entry, cfg;
     try {
       res = await fetch(directoryUrl("") + CONFIG_FILE, { cache: "no-store" });
@@ -3514,11 +3562,10 @@
     state.title = entry.title ? String(entry.title) : "";
     state.startName = entry.start_with ? String(entry.start_with) : null;
     cfg = entry.configuration || {};
-    if (!params.has("grid") && typeof cfg.grid === "boolean") state.showGrid = cfg.grid;
-    if (!params.has("preview") && typeof cfg.preview === "boolean") {
-      state.showPreview = cfg.preview;
-    }
-    return { path: entry.path ? String(entry.path) : "" };
+    return {
+      path: entry.path ? String(entry.path) : "",
+      configuration: cfg && typeof cfg === "object" ? cfg : {},
+    };
   }
 
   async function loadDirectory(dir) {
@@ -3678,6 +3725,7 @@
         setStatus(config.error, true);
         return;
       }
+      applyQueryOptions(mergeConfiguration(config.configuration));
       if (dir === "" && config.path) dir = normalizeDir(config.path);
     }
     if (dir == null) {

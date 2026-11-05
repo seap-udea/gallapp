@@ -165,9 +165,11 @@ Open the gallery with GET parameters. Only `dir` is required to open a folder. *
 | `title` | Title shown in the header |
 | `path` | Directory with the images, relative to the repo root; used when `dir` is not given |
 | `start_with` | Image name to open first (a saved position or `n=` wins); `null` for the first image |
-| `configuration.grid` / `configuration.preview` | Show the grid / the filmstrip (URL parameters override them) |
+| `configuration` | Object with any option of the [Query API](#query-api) except `dir`, `repo`, `ref` and `id`: `multi`, `session`, `n`, `likes`, `class`, `filter`, `grid`, `strip`, `persist`, `preview`. Used as defaults; parameters in the URL override them. |
 
-The **Directory** field is always relative to the repository root. Unauthenticated GitHub API calls are rate limited (60 per hour per IP).
+Example: `"configuration": { "multi": true, "filter": "plot_*", "grid": false, "strip": 96 }`.
+
+The **Directory** field is always relative to the repository root. Directory listings use the GitHub API (60 unauthenticated calls per hour per IP), so they are cached in `sessionStorage` for 10 minutes; reloading or reopening the same directory in that time makes no API call. Images and `.seap-udea-gallery.json` come from `raw.githubusercontent.com` and do not count.
 
 Examples:
 
