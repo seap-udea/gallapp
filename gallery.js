@@ -324,7 +324,16 @@
 
   var FILMSTRIP_RADIUS = 24;
   var STRIP_HEIGHT_DEFAULT = 66;
+  var DEFAULT_OWNER = "seap-udea";
+  var CONFIG_FILE = ".seap-udea-gallery.json";
   var state = {
+    // repo: "owner/name" when browsing a GitHub repository (?repo=), else ""
+    repo: "",
+    ref: "HEAD",
+    galleryId: "",
+    title: "",
+    startName: null,
+    showPreview: true,
     dir: "",
     session: "",
     multi: false,
@@ -645,8 +654,16 @@
     var strip = params.get("strip") || params.get("strip_h");
     var n = params.get("n") || params.get("image") || params.get("i");
     var session = parseSessionId(params.get("session"));
+    var repo = parseRepoParam(params.get("repo"));
     var height;
     var number;
+    if (repo === null) {
+      setStatus("Invalid repo. Use name or owner/name.", true);
+    } else {
+      state.repo = repo;
+      state.ref = (params.get("ref") || "").trim() || "HEAD";
+      state.galleryId = (params.get("id") || "").trim();
+    }
     state.multi = parseBoolParam(params.get("multi"), false);
     state.persistForced = parsePersistMode(params.get("persist"));
     if (state.persistForced !== "auto") {
@@ -676,6 +693,7 @@
       state.likeFilter = parseLikeFilter(likes);
     }
     state.showGrid = parseBoolParam(grid, true);
+    state.showPreview = parseBoolParam(params.get("preview"), true);
     if (strip != null && String(strip).trim() !== "") {
       height = parseInt(strip, 10);
       if (isFinite(height) && height >= 32 && height <= 240) {
@@ -688,10 +706,18 @@
     }
   }
 
+  function addRepoParams(params) {
+    if (!isRemote()) return;
+    params.set("repo", state.repo);
+    if (state.ref !== "HEAD") params.set("ref", state.ref);
+    if (state.galleryId) params.set("id", state.galleryId);
+  }
+
   function buildStatusParams(options) {
     var params = new URLSearchParams();
     var images = visibleImages();
     var multi = options && options.multi != null ? !!options.multi : !!state.multi;
+    addRepoParams(params);
     params.set("dir", state.dir || "");
     params.set("session", state.session || "");
     params.set("multi", multi ? "true" : "false");
@@ -705,6 +731,7 @@
     }
     params.set("filter", state.nameFilter || "*.*");
     params.set("grid", state.showGrid ? "true" : "false");
+    if (isRemote()) params.set("preview", state.showPreview ? "true" : "false");
     params.set("strip", String(state.stripHeight || STRIP_HEIGHT_DEFAULT));
     params.set(
       "persist",
@@ -801,9 +828,48 @@
     strip.style.setProperty("--gallery-strip-h", state.stripHeight + "px");
   }
 
+  function isRemote() {
+    return !!state.repo;
+  }
+
+  function encodePath(path) {
+    return String(path || "")
+      .split("/")
+      .map(encodeURIComponent)
+      .join("/");
+  }
+
+  function scopeKey() {
+    return (state.repo ? state.repo + "@" + state.ref + ":" : "") + state.dir;
+  }
+
+  /** "name" or "owner/name" -> "owner/name"; "" when absent, null when invalid. */
+  function parseRepoParam(raw) {
+    var text = String(raw == null ? "" : raw).trim();
+    if (!text) return "";
+    if (text.indexOf("/") === -1) text = DEFAULT_OWNER + "/" + text;
+    return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text) ? text : null;
+  }
+
   function directoryUrl(dir) {
-    var path = dir.split("/").map(encodeURIComponent).join("/") + "/";
+    var path;
+    if (isRemote()) {
+      path = dir ? encodePath(dir) + "/" : "";
+      return (
+        "https://raw.githubusercontent.com/" +
+        state.repo +
+        "/" +
+        encodePath(state.ref) +
+        "/" +
+        path
+      );
+    }
+    path = encodePath(dir) + "/";
     return new URL(path, window.location.origin + "/").href;
+  }
+
+  function galleryTitle() {
+    return state.title || basenameDir(state.dir);
   }
 
   function basenameDir(dir) {
@@ -812,11 +878,11 @@
   }
 
   function likeStorageKey() {
-    return "gallapp-likes:" + state.dir + sessionSuffix();
+    return "gallapp-likes:" + scopeKey() + sessionSuffix();
   }
 
   function positionStorageKey() {
-    return "gallapp-position:" + state.dir + sessionSuffix();
+    return "gallapp-position:" + scopeKey() + sessionSuffix();
   }
 
   function likesFileUrl() {
@@ -832,7 +898,7 @@
   }
 
   function multiStorageKey() {
-    return "gallapp-multi:" + state.dir + sessionSuffix();
+    return "gallapp-multi:" + scopeKey() + sessionSuffix();
   }
 
   function persistLabel() {
@@ -841,6 +907,7 @@
 
   function galleryUrl(dir, session) {
     var params = new URLSearchParams();
+    addRepoParams(params);
     params.set("dir", dir || "");
     if (session) params.set("session", session);
     if (state.multi) params.set("multi", "true");
@@ -880,7 +947,7 @@
   }
 
   function sidecarBrowserKey(fileName) {
-    return "gallapp:sidecar:" + state.dir + ":" + fileName;
+    return "gallapp:sidecar:" + scopeKey() + ":" + fileName;
   }
 
   function readBrowserSidecar(fileName) {
@@ -927,6 +994,11 @@
     var probeUrl;
     var existing;
     var res;
+    if (isRemote()) {
+      // GitHub is read-only from the browser: likes live in the tab session.
+      state.persistMode = "session";
+      return;
+    }
     if (state.persistForced === "session") {
       state.persistMode = "session";
       return;
@@ -2307,9 +2379,11 @@
   function renderHeader() {
     return (
       '<header class="gallery-hero">' +
-      '<p class="gallery-eyebrow">Local directory</p>' +
+      '<p class="gallery-eyebrow">' +
+      (isRemote() ? "GitHub · " + escapeHtml(state.repo) : "Local directory") +
+      "</p>" +
       "<h1 class=\"gallery-repo-name\">" +
-      escapeHtml(basenameDir(state.dir)) +
+      escapeHtml(galleryTitle()) +
       "</h1>" +
       '<p class="gallery-meta"><span id="gallery-image-count"></span> · <code class="gallery-path">' +
       escapeHtml(state.dir) +
@@ -2494,9 +2568,11 @@
       "</div>" +
       '<p class="gallery-preview-name" id="gallery-preview-name"></p>' +
       "</div>" +
-      '<div class="gallery-filmstrip" id="gallery-filmstrip" tabindex="0">' +
-      filmstrip +
-      "</div>" +
+      (state.showPreview
+        ? '<div class="gallery-filmstrip" id="gallery-filmstrip" tabindex="0">' +
+          filmstrip +
+          "</div>"
+        : "") +
       "</section>"
     );
   }
@@ -2994,7 +3070,7 @@
     // Paint the preview first so arrow navigation works before the
     // full thumbnail grid (thousands of nodes) is inserted.
     rootEl.innerHTML = renderHeader() + renderPreview();
-    document.title = basenameDir(state.dir) + " — Gallery App";
+    document.title = galleryTitle() + " — Gallery App";
     bindView("preview");
     applyStripHeight();
     if (images.length) {
@@ -3054,7 +3130,14 @@
       return;
     }
     if (!dir) {
-      window.location.assign(window.location.pathname);
+      window.location.assign(
+        window.location.pathname +
+          (isRemote() ? "?" + (function () {
+            var p = new URLSearchParams();
+            addRepoParams(p);
+            return p.toString();
+          })() : "")
+      );
       return;
     }
     sid = parseSessionId(session);
@@ -3346,9 +3429,101 @@
     setStatus("");
   }
 
+  async function listRemoteImages(dir) {
+    var api =
+      "https://api.github.com/repos/" +
+      state.repo +
+      "/git/trees/" +
+      encodePath(state.ref) +
+      (dir ? ":" + encodePath(dir) : "");
+    var base = directoryUrl(dir);
+    var res, data;
+    try {
+      res = await fetch(api, { headers: { Accept: "application/vnd.github+json" } });
+    } catch (err) {
+      return { error: "Could not reach GitHub. Check your connection and try again." };
+    }
+    if (res.status === 404) {
+      return {
+        error:
+          "Could not find \"" +
+          (dir || "/") +
+          "\" in " +
+          state.repo +
+          ". The path is relative to the repository root (the repository must be public).",
+      };
+    }
+    if (res.status === 403 || res.status === 429) {
+      return { error: "GitHub rate limit reached. Wait a few minutes and try again." };
+    }
+    if (!res.ok) {
+      return { error: "GitHub answered " + res.status + " for " + state.repo + "." };
+    }
+    data = await res.json();
+    return {
+      images: (data.tree || [])
+        .filter(function (item) {
+          return (
+            item.type === "blob" &&
+            item.path.charAt(0) !== "." &&
+            IMAGE_EXT.test(item.path)
+          );
+        })
+        .map(function (item) {
+          return { name: item.path, url: base + encodeURIComponent(item.path) };
+        })
+        .sort(function (a, b) {
+          return a.name.localeCompare(b.name, undefined, {
+            numeric: true,
+            sensitivity: "base",
+          });
+        }),
+    };
+  }
+
+  /** Reads CONFIG_FILE from the repo root and applies it; returns its path. */
+  async function loadRemoteConfig() {
+    var params = queryParams();
+    var res, data, entry, cfg;
+    try {
+      res = await fetch(directoryUrl("") + CONFIG_FILE, { cache: "no-store" });
+    } catch (err) {
+      return { error: "Could not reach GitHub. Check your connection and try again." };
+    }
+    if (!res.ok) return { path: "" };
+    try {
+      data = JSON.parse(await res.text());
+    } catch (err) {
+      return { error: CONFIG_FILE + " in " + state.repo + " is not valid JSON." };
+    }
+    if (Array.isArray(data)) {
+      entry = null;
+      data.forEach(function (item) {
+        if (!entry && item && (!state.galleryId || item.id === state.galleryId)) {
+          entry = item;
+        }
+      });
+      if (!entry && state.galleryId) {
+        return { error: "No gallery with id \"" + state.galleryId + "\" in " + CONFIG_FILE + "." };
+      }
+    } else {
+      entry = data;
+    }
+    if (!entry) return { path: "" };
+    if (entry.id && !state.galleryId) state.galleryId = String(entry.id);
+    state.title = entry.title ? String(entry.title) : "";
+    state.startName = entry.start_with ? String(entry.start_with) : null;
+    cfg = entry.configuration || {};
+    if (!params.has("grid") && typeof cfg.grid === "boolean") state.showGrid = cfg.grid;
+    if (!params.has("preview") && typeof cfg.preview === "boolean") {
+      state.showPreview = cfg.preview;
+    }
+    return { path: entry.path ? String(entry.path) : "" };
+  }
+
   async function loadDirectory(dir) {
     var url = directoryUrl(dir);
-    var res, type, html, images;
+    var res, type, html, images, listing;
     state.dir = dir;
     if (dirInput) dirInput.value = dir;
     syncSessionInput();
@@ -3360,37 +3535,47 @@
     );
     await detectPersistMode();
     document.title =
-      basenameDir(dir) +
+      (state.title || basenameDir(dir)) +
       (state.session ? " · " + state.session : "") +
       " — Gallery App";
-    try {
-      res = await fetch(url, { cache: "no-store" });
-    } catch (err) {
-      showIntro();
-      setStatus(
-        "Could not read the directory. Open Gallery App through the HTTP server (http://localhost:…/gallapp/), not as a file.",
-        true
-      );
-      return;
+    if (isRemote()) {
+      listing = await listRemoteImages(dir);
+      if (listing.error) {
+        showIntro();
+        setStatus(listing.error, true);
+        return;
+      }
+      images = listing.images;
+    } else {
+      try {
+        res = await fetch(url, { cache: "no-store" });
+      } catch (err) {
+        showIntro();
+        setStatus(
+          "Could not read the directory. Open Gallery App through the HTTP server (http://localhost:…/gallapp/), not as a file.",
+          true
+        );
+        return;
+      }
+      if (!res.ok) {
+        showIntro();
+        setStatus(
+          "Could not find \"" +
+            dir +
+            "\". The path is relative to the folder where you started the server.",
+          true
+        );
+        return;
+      }
+      type = res.headers.get("content-type") || "";
+      html = await res.text();
+      if (type.indexOf("html") === -1 && html.indexOf("<a ") === -1) {
+        showIntro();
+        setStatus("\"" + dir + "\" is not a directory.", true);
+        return;
+      }
+      images = imagesFromListing(html, url);
     }
-    if (!res.ok) {
-      showIntro();
-      setStatus(
-        "Could not find \"" +
-          dir +
-          "\". The path is relative to the folder where you started the server.",
-        true
-      );
-      return;
-    }
-    type = res.headers.get("content-type") || "";
-    html = await res.text();
-    if (type.indexOf("html") === -1 && html.indexOf("<a ") === -1) {
-      showIntro();
-      setStatus("\"" + dir + "\" is not a directory.", true);
-      return;
-    }
-    images = imagesFromListing(html, url);
     state.images = images;
     invalidateVisible();
     state.index = 0;
@@ -3436,7 +3621,7 @@
           }
         }
         state.index = idx >= 0 ? idx : 0;
-      })(await loadPosition());
+      })((await loadPosition()) || state.startName);
     }
     if (state.session) {
       if (!(await ensureSessionSidecars())) {
@@ -3456,10 +3641,13 @@
     savePositionNow();
   }
 
-  function boot() {
-    var dir;
+  async function boot() {
+    var dir, config;
     bindGlobals();
     applyQueryOptions();
+    if (isRemote() && dirInput) {
+      dirInput.placeholder = "path/relative/to/the/repository/root";
+    }
     if (dirForm) {
       dirForm.addEventListener("submit", function (event) {
         event.preventDefault();
@@ -3483,6 +3671,15 @@
       return;
     }
     dir = normalizeDir(queryDir());
+    if (isRemote()) {
+      config = await loadRemoteConfig();
+      if (config.error) {
+        showIntro();
+        setStatus(config.error, true);
+        return;
+      }
+      if (dir === "" && config.path) dir = normalizeDir(config.path);
+    }
     if (dir == null) {
       showIntro();
       setStatus("The path cannot contain \"..\" or move above the server root.", true);

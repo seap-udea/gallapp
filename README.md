@@ -140,7 +140,11 @@ Open the gallery with GET parameters. Only `dir` is required to open a folder. *
 
 | Parameter | Meaning | Default | Example |
 |---|---|---|---|
-| `dir` | Directory path relative to the server root | — | `images/my-folder` |
+| `dir` | Directory path relative to the server root (or to the repository root when `repo` is set) | — | `images/my-folder` |
+| `repo` | Browse a public GitHub repository instead of a local folder: `name` (owner defaults to `seap-udea`) or `owner/name`. Reads `.seap-udea-gallery.json` from the repo root; `dir` is then optional. Likes stay in the browser session (`persist=session`). | — | `repo=MVROC` |
+| `ref` | Branch, tag or commit used with `repo` | `HEAD` (default branch) | `ref=main` |
+| `id` | Entry of `.seap-udea-gallery.json` when it is an array (used with `repo`) | first entry | `id=medellin` |
+| `preview` | Show the filmstrip (used with `repo`; `.seap-udea-gallery.json` sets the default) | `1` | `preview=0` |
 | `session` | Session name (`[A-Za-z0-9_-]`, max 40). Empty or omitted = default session. | (default session) | `session=alice` |
 | `multi` | Enable multi-class mode instead of likes | `false` | `multi=true` |
 | `n` | 1-based image number after filters (`image` and `i` also work). Overrides the saved position on first load. | saved position, else `1` | `n=42` |
@@ -150,6 +154,20 @@ Open the gallery with GET parameters. Only `dir` is required to open a folder. *
 | `grid` | Show the thumbnail grid: `1`/`true` or `0`/`false` | `1` | `grid=0` |
 | `strip` | Filmstrip height in pixels, 32–240 (`strip_h` also works) | `66` | `strip=96` |
 | `persist` | Where to write sidecars: `auto` (probe PUT), `file` (folder), or `session` (browser `sessionStorage`) | `auto` | `persist=session` |
+
+### GitHub repositories (`repo=`)
+
+`?repo=NAME` lists images through the GitHub API and loads them from `raw.githubusercontent.com`, so no server is needed. The optional `.seap-udea-gallery.json` at the repo root (an object or an array of objects) accepts:
+
+| Key | Meaning |
+|---|---|
+| `id` | Entry name, selected with `id=` |
+| `title` | Title shown in the header |
+| `path` | Directory with the images, relative to the repo root; used when `dir` is not given |
+| `start_with` | Image name to open first (a saved position or `n=` wins); `null` for the first image |
+| `configuration.grid` / `configuration.preview` | Show the grid / the filmstrip (URL parameters override them) |
+
+The **Directory** field is always relative to the repository root. Unauthenticated GitHub API calls are rate limited (60 per hour per IP).
 
 Examples:
 
